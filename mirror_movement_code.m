@@ -2,7 +2,7 @@
 
 clear all
 
-port = "COM4";
+port = "COM4";            % To be edited to relevant computer port
 baud = 256000;
 
 mirror = serialport(port, baud);
