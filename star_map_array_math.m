@@ -1,3 +1,5 @@
+%% To calculate the necessary star mapp array matrix
+
 function [i, j] = star_map_array_math(theta, phi, Nrows, Ncols)
 
     % Convert angle to star map pixel index
