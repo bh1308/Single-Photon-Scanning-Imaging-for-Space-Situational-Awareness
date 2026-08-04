@@ -183,7 +183,7 @@ namespace NationalInstruments.Examples.CountDigEvents
             return points;
         }
 
-        public async Task RunFullScanAsync(SerialPort mirrorPort, Task counterTask, CounterReader counterReader)
+        public async System.Threading.Tasks.Task RunFullScanAsync(SerialPort mirrorPort, Task counterTask, CounterReader counterReader)
         {
             var circular = GenerateCircularScan();
             var raster   = GenerateRasterScan();
