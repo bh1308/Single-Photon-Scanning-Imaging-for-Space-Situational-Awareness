@@ -418,6 +418,8 @@ namespace NationalInstruments.Examples.CountDigEvents
                 csvWriter = new StreamWriter(filename, false);
                 csvWriter.WriteLine("Position,X,Y,Count");
                 MessageBox.Show(filename);
+                // Start scanning (mirror movement + photon reading)
+                _ = RunFullScanAsync(mirrorPort, myTask, myCounterReader);
                 loopTimer.Enabled = true;
             }
             catch (DaqException exception)
