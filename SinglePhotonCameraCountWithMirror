@@ -209,7 +209,7 @@ namespace NationalInstruments.Examples.CountDigEvents
 
                 countTextBox.Text = reading.ToString();
 
-                await Task.Delay(1);
+                // await Task.Delay(1);
             }
 
             mirrorPort.WriteLine("xy= 0; 0");
