@@ -74,6 +74,7 @@ using NationalInstruments.DAQmx;
 using System.Diagnostics;
 using System.Data.Common;
 using System.IO;
+using System.IO.Ports;
 using System.Globalization;
 
 namespace NationalInstruments.Examples.CountDigEvents
@@ -104,7 +105,6 @@ namespace NationalInstruments.Examples.CountDigEvents
         private CICountEdgesCountDirection countDirection;
         private CounterReader myCounterReader;
         private System.Windows.Forms.ComboBox counterComboBox;
-        private uint reading;
         private int scanPosition = 1;
         private StreamWriter csvWriter;
 
@@ -491,6 +491,7 @@ namespace NationalInstruments.Examples.CountDigEvents
                 scanPosition = 1;
 
                 // Optotune MIRROR CONNECTION
+                // CHECK CORRECT PORT
                 mirrorPort = new SerialPort("COM4", 256000);
                 mirrorPort.NewLine = "\r\n";
                 mirrorPort.Open();
