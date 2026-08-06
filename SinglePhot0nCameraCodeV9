@@ -134,7 +134,6 @@ namespace NationalInstruments.Examples.CountDigEvents
         private double currentX = 0.0;
         private double currentY = 0.0;
         // Reads the positions of each coordinate
-        private uint reading;
         private uint previousReading = 0;
 
         private int fullScanCount;
@@ -564,6 +563,8 @@ namespace NationalInstruments.Examples.CountDigEvents
                 fullScanCount = fullScan.Count;
                 scanPosition = 0;
 
+                myTask.Start();
+                previousReading = myCounterReader.ReadSingleSampleUInt32();
 
                 loopTimer.Enabled = true;
             }
@@ -625,13 +626,12 @@ namespace NationalInstruments.Examples.CountDigEvents
                     // photonCount += (uint)gaussianBoost;
                 }
 
-                previousReading = reading;
 
                 if (scanPosition % 100 == 0)
-                    countTextBox.Text = reading.ToString();
+                    countTextBox.Text = photonCount.ToString();
 
                 // Display the count
-                countTextBox.Text = Convert.ToString(reading);
+                countTextBox.Text = Convert.ToString(photonCount);
                 // Save to CSV
                 csvWriter.WriteLine(
                     "{0},{1},{2},{3}",
@@ -646,7 +646,7 @@ namespace NationalInstruments.Examples.CountDigEvents
                     scanPosition,
                     currentX,
                     currentY,
-                    reading,
+                    photonCount,
                     stopwatch.Elapsed.TotalMilliseconds);
 
                 await System.Threading.Tasks.Task.Delay(1);
