@@ -548,17 +548,17 @@ namespace NationalInstruments.Examples.CountDigEvents
                 csvWriter.WriteLine("Position,X,Y,Count");
                 MessageBox.Show(filename);
 
-                fullScanCount = GenerateCircularScan().Count + GenerateRasterScan().Count;
+                fullScanCount = GenerateCircularScan().Count + GenerateZigZagScan().Count;
 
                 // Start scanning (mirror movement + photon reading)
 
 
                 var circular = GenerateCircularScan();
-                var raster = GenerateRasterScan();
+                var zigzag = GenerateZigZagScan();
 
                 fullScan = new List<(double X, double Y)>();
                 fullScan.AddRange(circular);
-                fullScan.AddRange(raster);
+                fullScan.AddRange(zigzag);
 
                 fullScanCount = fullScan.Count;
                 scanPosition = 0;
