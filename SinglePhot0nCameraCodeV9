@@ -178,7 +178,7 @@ namespace NationalInstruments.Examples.CountDigEvents
 
         // ZigZag scan
 
-        public List<(double X, double Y)> GenerateRasterScan()
+        public List<(double X, double Y)> GenerateZigZagScan()
         {
             List<(double X, double Y)> points = new List<(double X, double Y)>();
 
@@ -231,11 +231,11 @@ namespace NationalInstruments.Examples.CountDigEvents
         //    // counterTask.Start();
 
         //    var circular = GenerateCircularScan();
-        //    var raster = GenerateRasterScan();
+        //    var zigzag = GenerateZigZagScan();
 
         //    var fullScan = new List<(double X, double Y)>();
         //    fullScan.AddRange(circular);
-        //    fullScan.AddRange(raster);
+        //    fullScan.AddRange(zigzag);
 
         //    foreach (var point in fullScan)
         //    {
