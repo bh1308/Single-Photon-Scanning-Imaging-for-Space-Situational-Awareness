@@ -1,0 +1,37 @@
+public List<(double X, double Y)> GenerateSpiralScan()
+{
+    List<(double X, double Y)> points = new List<(double X, double Y)>();
+
+    double R = Math.Tan(16.6 * Math.PI / 180) / Math.Tan(50 * Math.PI / 180);
+
+    int turns = 5;          // number of spiral turns
+    int N = 1500;           // number of points
+    double a = 0.0;         // start radius
+    double b = R / (2 * Math.PI * turns);   // controls spacing
+
+    for (int k = 0; k < N; k++)
+    {
+        double theta = (double)k / N * (2 * Math.PI * turns);
+        double r = a + b * theta;
+
+        double x = r * Math.Cos(theta);
+        double y = r * Math.Sin(theta);
+
+        // stay inside circular aperture
+        if (Math.Abs(x) <= R && Math.Abs(y) <= R)
+            points.Add((x, y));
+    }
+
+    return points;
+}
+
+startButton_Click:
+
+var spiral = GenerateSpiralScan();
+
+fullScan = new List<(double X, double Y)>();
+fullScan.AddRange(spiral);
+
+Update fullscan:
+fullScanCount = fullScan.Count;
+
