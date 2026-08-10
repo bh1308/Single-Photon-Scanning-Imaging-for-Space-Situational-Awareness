@@ -1,0 +1,174 @@
+Add these fields at the top of MainForm
+
+private List<ScanResult> scanResults;
+private string csvFilename;
+
+private class ScanResult
+{
+    public int Position { get; set; }
+    public double X { get; set; }
+    public double Y { get; set; }
+    public uint Count { get; set; }
+}
+
+Replace your RunFullScanAsync() with this clean version
+
+public async Task RunFullScanAsync()
+{
+    try
+    {
+        var fullScan = GenerateSpiralScan();
+        scanResults = new List<ScanResult>();
+
+        myTask.Start();
+        previousReading = myCounterReader.ReadSingleSampleUInt32();
+
+        Stopwatch scanTimer = Stopwatch.StartNew();
+
+        int position = 0;
+
+        foreach (var point in fullScan)
+        {
+            currentX = point.X;
+            currentY = point.Y;
+
+            // Move mirror
+            mirrorPort.WriteLine($"xy= {currentX:F3}; {currentY:F3}");
+
+            await Task.Delay(1);
+
+            // Read counter
+            uint currentReading = myCounterReader.ReadSingleSampleUInt32();
+            uint photonCount = currentReading - previousReading;
+            previousReading = currentReading;
+
+            // Store result
+            scanResults.Add(new ScanResult
+            {
+                Position = position,
+                X = currentX,
+                Y = currentY,
+                Count = photonCount
+            });
+
+            // Update UI
+            countTextBox.Text = photonCount.ToString();
+
+            position++;
+        }
+
+        scanTimer.Stop();
+
+        // Return mirror to centre
+        mirrorPort.WriteLine("xy=0;0");
+
+        // Write CSV
+        using (StreamWriter writer = new StreamWriter(csvFilename, false))
+        {
+            writer.WriteLine("Position,X,Y,Count");
+
+            foreach (var result in scanResults)
+            {
+                writer.WriteLine(
+                    $"{result.Position}," +
+                    $"{result.X.ToString(CultureInfo.InvariantCulture)}," +
+                    $"{result.Y.ToString(CultureInfo.InvariantCulture)}," +
+                    $"{result.Count}");
+            }
+        }
+
+        // Stop DAQ
+        myTask.Stop();
+        myTask.Dispose();
+        myTask = null;
+
+        // Close mirror
+        if (mirrorPort != null && mirrorPort.IsOpen)
+            mirrorPort.Close();
+
+        // Calculate scan speed
+        double totalTime = scanTimer.Elapsed.TotalSeconds;
+        double pointsPerSecond = scanResults.Count / totalTime;
+        double averageTimePerPoint = totalTime / scanResults.Count * 1000.0;
+
+        // Report results
+        MessageBox.Show(
+            "Scan complete.\n\n" +
+            "Points: " + scanResults.Count + "\n" +
+            "Time: " + totalTime.ToString("F2") + " s\n" +
+            "Rate: " + pointsPerSecond.ToString("F1") + " points/s\n" +
+            "Average point time: " + averageTimePerPoint.ToString("F2") + " ms\n\n" +
+            "Saved to:\n" + csvFilename);
+
+        startButton.Enabled = true;
+        stopButton.Enabled = false;
+    }
+    catch (Exception ex)
+    {
+        MessageBox.Show("Error during scan:\n\n" + ex.Message);
+        startButton.Enabled = true;
+        stopButton.Enabled = false;
+    }
+}
+
+
+Replace your Start button logic with this clean version
+
+private void startButton_Click(object sender, EventArgs e)
+{
+    try
+    {
+        myTask = new Task();
+
+        switch (countDirectionComboBox.SelectedItem.ToString())
+        {
+            case "Count Up":
+                countDirection = CICountEdgesCountDirection.Up;
+                break;
+            case "Count Down":
+                countDirection = CICountEdgesCountDirection.Down;
+                break;
+            case "Externally Controlled":
+                countDirection = CICountEdgesCountDirection.ExternallyControlled;
+                break;
+        }
+
+        myTask.CIChannels.CreateCountEdgesChannel(
+            "Dev1/ctr2",
+            "Count Edges",
+            edgeType,
+            Convert.ToInt64(initialCountTextBox.Text),
+            countDirection);
+
+        myCounterReader = new CounterReader(myTask.Stream);
+
+        // Mirror connection
+        mirrorPort = new SerialPort("COM3", 256000);
+        mirrorPort.NewLine = "\r\n";
+        mirrorPort.Open();
+        mirrorPort.WriteLine("start");
+
+        // CSV setup
+        string folder = @"C:\Users\user\Desktop\Single Photon Camera\CSV";
+        Directory.CreateDirectory(folder);
+
+        csvFilename = Path.Combine(
+            folder,
+            $"PhotonScan_{DateTime.Now:yyyyMMdd_HHmmss}.csv");
+
+        // Start scan
+        _ = RunFullScanAsync();
+
+        startButton.Enabled = false;
+        stopButton.Enabled = true;
+    }
+    catch (DaqException exception)
+    {
+        MessageBox.Show(exception.Message);
+        myTask.Dispose();
+        return;
+    }
+}
+
+
+
