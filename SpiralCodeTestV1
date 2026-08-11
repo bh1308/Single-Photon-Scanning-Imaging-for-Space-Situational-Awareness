@@ -1,4 +1,5 @@
 /******************************************************************************
+
 *
 * Example program:
 *   CountDigEvents
@@ -150,8 +151,8 @@ namespace NationalInstruments.Examples.CountDigEvents
 
         //     double R = Math.Tan(16.6 * Math.PI / 180) / Math.Tan(50 * Math.PI / 180);
 
-        //     int N = 1500;
-        //     double turns = 3.0;
+        //     int N = 3500;
+        //     double turns = 20.0;
 
         //     for (int k = 0; k < N; k++)
         //     {
