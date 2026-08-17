@@ -1,0 +1,516 @@
+%% ============================================================
+% TASK 8 - SINGLE-PHOTON SCANNING CAMERA
+%
+% STAR MAP + SPC FIELD OF VIEW + SINGLE-FIBRE SCANNING
+%
+% At each mirror position:
+%
+%       Star map
+%           ↓
+%       SPC FOV
+%           ↓
+%  Multiple star-map pixels
+%           ↓
+%     Fibre / detector
+%           ↓
+%     Photon count
+%           ↓
+%       SPC frame
+%
+% ============================================================
+
+clear;
+clc;
+close all;
+
+
+%% ============================================================
+% 1. STAR MAP
+% ============================================================
+
+IMAGE_WIDTH  = 100;
+IMAGE_HEIGHT = 100;
+
+starMap = zeros(IMAGE_HEIGHT,IMAGE_WIDTH);
+
+
+% [X position, Y position, brightness]
+
+stars = [
+    20, 30, 10e6;
+    45, 35, 15e6;
+    70, 50, 12e6;
+    80, 75, 20e6;
+    35, 80, 10e6;
+    60, 90, 8e6
+];
+
+
+% Place stars into star map
+
+for k = 1:size(stars,1)
+
+    xStar = stars(k,1);
+    yStar = stars(k,2);
+    brightness = stars(k,3);
+
+    starMap(yStar,xStar) = brightness;
+
+end
+
+
+%% ============================================================
+% 2. GAUSSIAN STAR PSF
+% ============================================================
+
+PSF_SIGMA = 1.5;
+
+[X,Y] = meshgrid(1:IMAGE_WIDTH,1:IMAGE_HEIGHT);
+
+
+gaussianStarMap = zeros(IMAGE_HEIGHT,IMAGE_WIDTH);
+
+
+for k = 1:size(stars,1)
+
+    xStar = stars(k,1);
+    yStar = stars(k,2);
+
+    brightness = stars(k,3);
+
+
+    gaussianStar = brightness * ...
+        exp( ...
+        -((X-xStar).^2 + (Y-yStar).^2) ...
+        /(2*PSF_SIGMA^2));
+
+
+    gaussianStarMap = ...
+        gaussianStarMap + gaussianStar;
+
+end
+
+
+%% ============================================================
+% 3. SPC FIELD OF VIEW
+% ============================================================
+
+% Diameter of SPC FOV in star-map pixels
+
+FOV_SIZE = 7;
+
+
+% Radius of circular FOV
+
+FOV_RADIUS = floor(FOV_SIZE/2);
+
+
+% Create circular FOV mask
+
+[fovX,fovY] = meshgrid( ...
+    -FOV_RADIUS:FOV_RADIUS, ...
+    -FOV_RADIUS:FOV_RADIUS);
+
+
+FOV_MASK = ...
+    sqrt(fovX.^2 + fovY.^2) <= FOV_RADIUS;
+
+
+%% ============================================================
+% 4. DISPLAY FOV
+% ============================================================
+
+figure;
+
+imagesc(FOV_MASK);
+
+axis image;
+
+colormap(gray);
+colorbar;
+
+title('SPC Circular Field of View');
+
+xlabel('FOV X');
+ylabel('FOV Y');
+
+
+%% ============================================================
+% 5. SPCM PARAMETERS
+% ============================================================
+
+PDE = 0.65;
+
+DARK_COUNT_RATE = 101;      % Hz
+
+INTEGRATION_TIME = 0.1;     % seconds
+
+
+%% ============================================================
+% 6. MIRROR SCAN
+% ============================================================
+
+Nx = 50;
+Ny = 50;
+
+
+% Mirror scan positions
+
+scanX = linspace(1,IMAGE_WIDTH,Nx);
+
+scanY = linspace(1,IMAGE_HEIGHT,Ny);
+
+
+% SPC reconstructed frame
+
+SPC_frame = zeros(Ny,Nx);
+
+
+% Raw detector counts
+
+photonCounts = zeros(Ny,Nx);
+
+
+%% ============================================================
+% 7. FOV CONTRIBUTION MAP
+% ============================================================
+
+% This shows how much light enters the detector at each
+% mirror position.
+
+FOV_signal = zeros(Ny,Nx);
+
+
+%% ============================================================
+% 8. PERFORM SPC SCAN
+% ============================================================
+
+fprintf('\n');
+fprintf('============================================\n');
+fprintf('TASK 8 - SPC FOV SCAN\n');
+fprintf('============================================\n');
+
+fprintf('Star map size: %d x %d\n', ...
+    IMAGE_WIDTH,IMAGE_HEIGHT);
+
+fprintf('FOV diameter: %d pixels\n',FOV_SIZE);
+
+fprintf('Scan size: %d x %d\n',Nx,Ny);
+
+fprintf('Total measurements: %d\n',Nx*Ny);
+
+
+for j = 1:Ny
+
+    for i = 1:Nx
+
+
+        %% ----------------------------------------------------
+        % CURRENT MIRROR POSITION
+        % -----------------------------------------------------
+
+        centreX = round(scanX(i));
+        centreY = round(scanY(j));
+
+
+        %% ----------------------------------------------------
+        % DETERMINE FOV BOUNDARIES
+        % -----------------------------------------------------
+
+        xMin = centreX - FOV_RADIUS;
+        xMax = centreX + FOV_RADIUS;
+
+        yMin = centreY - FOV_RADIUS;
+        yMax = centreY + FOV_RADIUS;
+
+
+        %% ----------------------------------------------------
+        % LIMIT FOV TO STAR MAP
+        % -----------------------------------------------------
+
+        xMinMap = max(1,xMin);
+        xMaxMap = min(IMAGE_WIDTH,xMax);
+
+        yMinMap = max(1,yMin);
+        yMaxMap = min(IMAGE_HEIGHT,yMax);
+
+
+        %% ----------------------------------------------------
+        % EXTRACT REGION INSIDE FOV
+        % -----------------------------------------------------
+
+        localImage = ...
+            gaussianStarMap( ...
+            yMinMap:yMaxMap, ...
+            xMinMap:xMaxMap);
+
+
+        %% ----------------------------------------------------
+        % CREATE CORRESPONDING FOV MASK
+        % -----------------------------------------------------
+
+        maskXStart = ...
+            1 + (xMinMap-xMin);
+
+        maskXEnd = ...
+            maskXStart + size(localImage,2)-1;
+
+
+        maskYStart = ...
+            1 + (yMinMap-yMin);
+
+        maskYEnd = ...
+            maskYStart + size(localImage,1)-1;
+
+
+        localMask = ...
+            FOV_MASK( ...
+            maskYStart:maskYEnd, ...
+            maskXStart:maskXEnd);
+
+
+        %% ----------------------------------------------------
+        % COLLECT LIGHT FROM ENTIRE FOV
+        % -----------------------------------------------------
+
+        collectedLight = ...
+            sum(localImage(localMask));
+
+
+        %% ----------------------------------------------------
+        % STORE FOV SIGNAL
+        % -----------------------------------------------------
+
+        FOV_signal(j,i) = collectedLight;
+
+
+        %% ----------------------------------------------------
+        % CONVERT TO EXPECTED PHOTONS
+        % -----------------------------------------------------
+
+        expectedPhotons = ...
+            collectedLight * ...
+            INTEGRATION_TIME;
+
+
+        %% ----------------------------------------------------
+        % APPLY DETECTOR EFFICIENCY
+        % -----------------------------------------------------
+
+        detectedPhotons = ...
+            expectedPhotons * PDE;
+
+
+        %% ----------------------------------------------------
+        % ADD DARK COUNTS
+        % -----------------------------------------------------
+
+        darkCounts = ...
+            DARK_COUNT_RATE * ...
+            INTEGRATION_TIME;
+
+
+        totalExpectedCounts = ...
+            detectedPhotons + darkCounts;
+
+
+        %% ----------------------------------------------------
+        % PHOTON COUNTING STATISTICS
+        % -----------------------------------------------------
+
+        measuredCount = ...
+            poissrnd(totalExpectedCounts);
+
+
+        %% ----------------------------------------------------
+        % STORE DETECTOR COUNT
+        % -----------------------------------------------------
+
+        photonCounts(j,i) = measuredCount;
+
+
+        %% ----------------------------------------------------
+        % STORE IN SPC FRAME
+        % -----------------------------------------------------
+
+        SPC_frame(j,i) = measuredCount;
+
+
+    end
+
+end
+
+
+%% ============================================================
+% 9. DISPLAY ORIGINAL STAR MAP
+% ============================================================
+
+figure;
+
+imagesc(gaussianStarMap);
+
+axis image;
+
+set(gca,'YDir','normal');
+
+colormap(gray);
+colorbar;
+
+xlabel('Star Map X');
+ylabel('Star Map Y');
+
+title('Original Gaussian Star Map');
+
+
+%% ============================================================
+% 10. DISPLAY FOV SIGNAL
+% ============================================================
+
+figure;
+
+imagesc(FOV_signal);
+
+axis image;
+
+set(gca,'YDir','normal');
+
+colormap(gray);
+colorbar;
+
+xlabel('Mirror Scan X');
+ylabel('Mirror Scan Y');
+
+title('Total Light Collected Within SPC FOV');
+
+
+%% ============================================================
+% 11. DISPLAY RAW SPC FRAME
+% ============================================================
+
+figure;
+
+imagesc(SPC_frame);
+
+axis image;
+
+set(gca,'YDir','normal');
+
+colormap(gray);
+colorbar;
+
+xlabel('Mirror Scan X');
+ylabel('Mirror Scan Y');
+
+title('SPC Frame - Raw Photon Counts');
+
+
+%% ============================================================
+% 12. DISPLAY COUNTS VS SCAN INDEX
+% ============================================================
+
+figure;
+
+plot(photonCounts(:));
+
+xlabel('Mirror Scan Index');
+
+ylabel('Photon Count');
+
+title('SPCM Counts vs Mirror Scan Index');
+
+grid on;
+
+
+%% ============================================================
+% 13. DISPLAY EXAMPLE FOV POSITION
+% ============================================================
+
+% Choose an example scan position
+
+exampleX = 45;
+exampleY = 35;
+
+
+figure;
+
+imagesc(gaussianStarMap);
+
+axis image;
+
+set(gca,'YDir','normal');
+
+colormap(gray);
+colorbar;
+
+hold on;
+
+
+% Draw FOV boundary
+
+rectangle( ...
+    'Position', ...
+    [exampleX-FOV_RADIUS, ...
+     exampleY-FOV_RADIUS, ...
+     FOV_SIZE, ...
+     FOV_SIZE], ...
+    'EdgeColor','r', ...
+    'LineWidth',2);
+
+
+plot(exampleX,exampleY,'r+','MarkerSize',12);
+
+
+xlabel('Star Map X');
+ylabel('Star Map Y');
+
+title('Example SPC FOV Position');
+
+hold off;
+
+
+%% ============================================================
+% 14. RESULTS
+% ============================================================
+
+fprintf('\n');
+fprintf('============================================\n');
+fprintf('TASK 8 COMPLETE\n');
+fprintf('============================================\n');
+
+fprintf('FOV diameter: %d pixels\n',FOV_SIZE);
+
+fprintf('FOV radius: %d pixels\n',FOV_RADIUS);
+
+fprintf('Scan size: %d x %d\n',Nx,Ny);
+
+fprintf('Total measurements: %d\n',Nx*Ny);
+
+fprintf('Integration time: %.3f seconds\n', ...
+    INTEGRATION_TIME);
+
+fprintf('Dark count rate: %.1f Hz\n', ...
+    DARK_COUNT_RATE);
+
+fprintf('============================================\n');
+
+
+%% ============================================================
+% 15. SAVE DATA
+% ============================================================
+
+save('Task8_SPC_FOV_Simulation.mat', ...
+    'gaussianStarMap', ...
+    'FOV_MASK', ...
+    'FOV_SIZE', ...
+    'FOV_signal', ...
+    'SPC_frame', ...
+    'photonCounts', ...
+    'scanX', ...
+    'scanY', ...
+    'Nx', ...
+    'Ny', ...
+    'PDE', ...
+    'DARK_COUNT_RATE', ...
+    'INTEGRATION_TIME');
+
+fprintf('\nTask 8 data saved.\n');
