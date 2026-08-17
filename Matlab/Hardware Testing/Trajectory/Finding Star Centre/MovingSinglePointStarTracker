@@ -1,0 +1,781 @@
+function MovingSinglePointStarTracker
+
+%% ============================================================
+% SINGLE-PIXEL MOVING STAR TRACKER
+%
+% Each frame:
+%
+% CSV
+%   ->
+% Mirror Position
+%   ->
+% 25 x 25 SPC Frame
+%   ->
+% Background Correction
+%   ->
+% Highest Count = ONE STAR PIXEL
+%
+% The detected star is represented by ONE pixel.
+%
+% The trajectory is therefore a collection of single pixels.
+%
+% NO RICHARDSON-LUCY
+% NO CENTROID
+% NO CONNECTING LINE
+% ============================================================
+
+clear; clc; close all
+
+
+%% ============================================================
+% SELECT 5 CSV FILES
+% ============================================================
+
+folder = '\\userfs\bh1308\w2k\Desktop\Single Photon Camera\CSV';
+
+[filenames, pathname] = uigetfile( ...
+    fullfile(folder,'*.csv'), ...
+    'Select 5 Photon Scan Files', ...
+    'MultiSelect','on');
+
+
+if isequal(filenames,0)
+    return
+end
+
+
+% Make sure filenames is a cell array
+
+if ischar(filenames)
+
+    filenames = {filenames};
+
+end
+
+
+Nframes = length(filenames);
+
+
+if Nframes ~= 5
+
+    error('Please select exactly 5 CSV files.');
+
+end
+
+
+%% ============================================================
+% SCAN PARAMETERS
+% ============================================================
+
+Nx = 25;
+Ny = 25;
+
+
+%% ============================================================
+% STORAGE
+% ============================================================
+
+% Single detected pixel position
+pixelX = NaN(Nframes,1);
+pixelY = NaN(Nframes,1);
+
+% Mirror coordinates
+trackedX = NaN(Nframes,1);
+trackedY = NaN(Nframes,1);
+
+% Maximum count in each frame
+maxCounts = NaN(Nframes,1);
+
+
+%% ============================================================
+% PROCESS EACH FRAME
+% ============================================================
+
+for frameNumber = 1:Nframes
+
+
+    fprintf('\n')
+    fprintf('========================================\n')
+    fprintf('Processing Frame %d\n',frameNumber)
+    fprintf('File: %s\n',filenames{frameNumber})
+    fprintf('========================================\n')
+
+
+    %% ========================================================
+    % LOAD CSV
+    % ========================================================
+
+    data = readtable( ...
+        fullfile(pathname,filenames{frameNumber}));
+
+
+    mirrorX = data.X;
+    mirrorY = data.Y;
+    Counts  = data.Count;
+
+
+    %% ========================================================
+    % CREATE MIRROR GRID
+    % ========================================================
+
+    x_grid = linspace( ...
+        min(mirrorX), ...
+        max(mirrorX), ...
+        Nx);
+
+
+    y_grid = linspace( ...
+        min(mirrorY), ...
+        max(mirrorY), ...
+        Ny);
+
+
+    %% ========================================================
+    % CREATE SPC FRAME
+    % ========================================================
+
+    SPC_counts = zeros(Ny,Nx);
+
+    SPC_visits = zeros(Ny,Nx);
+
+
+    %% ========================================================
+    % MAP MIRROR POSITIONS TO PIXELS
+    % ========================================================
+
+    for k = 1:length(Counts)
+
+
+        [~,x_index] = ...
+            min(abs(x_grid - mirrorX(k)));
+
+
+        [~,y_index] = ...
+            min(abs(y_grid - mirrorY(k)));
+
+
+        % Add photon count
+
+        SPC_counts(y_index,x_index) = ...
+            SPC_counts(y_index,x_index) + Counts(k);
+
+
+        % Record visit
+
+        SPC_visits(y_index,x_index) = ...
+            SPC_visits(y_index,x_index) + 1;
+
+
+    end
+
+
+    %% ========================================================
+    % AVERAGE COUNTS
+    % ========================================================
+
+    SPC_frame = zeros(Ny,Nx);
+
+
+    valid = SPC_visits > 0;
+
+
+    SPC_frame(valid) = ...
+        SPC_counts(valid) ./ SPC_visits(valid);
+
+
+    %% ========================================================
+    % BACKGROUND CALCULATION
+    % ========================================================
+
+    backgroundMedian = median(Counts);
+
+    sigma = std(Counts);
+
+
+    % Same threshold method as your previous code
+
+    threshold = ...
+        backgroundMedian - sigma;
+
+
+    %% ========================================================
+    % BACKGROUND CORRECTION
+    % ========================================================
+
+    Photon_image = ...
+        max(SPC_frame - threshold,0);
+
+
+    %% ========================================================
+    % FIND SINGLE HIGHEST-COUNT PIXEL
+    % ========================================================
+
+    [maxCount,linearIndex] = ...
+        max(Photon_image(:));
+
+
+    maxCounts(frameNumber) = ...
+        maxCount;
+
+
+    %% ========================================================
+    % CONVERT LINEAR INDEX TO X/Y
+    % ========================================================
+
+    [starY,starX] = ...
+        ind2sub( ...
+        size(Photon_image), ...
+        linearIndex);
+
+
+    %% ========================================================
+    % STORE PIXEL POSITION
+    % ========================================================
+
+    pixelX(frameNumber) = ...
+        starX;
+
+
+    pixelY(frameNumber) = ...
+        starY;
+
+
+    %% ========================================================
+    % STORE MIRROR POSITION
+    % ========================================================
+
+    trackedX(frameNumber) = ...
+        x_grid(starX);
+
+
+    trackedY(frameNumber) = ...
+        y_grid(starY);
+
+
+    %% ========================================================
+    % PRINT RESULTS
+    % ========================================================
+
+    fprintf('\n')
+
+    fprintf('Background Median = %.2f\n', ...
+        backgroundMedian);
+
+    fprintf('Background SD = %.2f\n', ...
+        sigma);
+
+    fprintf('Background Threshold = %.2f\n', ...
+        threshold);
+
+    fprintf('\n')
+
+    fprintf('Detected single pixel:\n');
+
+    fprintf('Maximum corrected count = %.2f\n', ...
+        maxCount);
+
+    fprintf('Pixel X = %d\n', ...
+        starX);
+
+    fprintf('Pixel Y = %d\n', ...
+        starY);
+
+    fprintf('Mirror X = %.6f\n', ...
+        trackedX(frameNumber));
+
+    fprintf('Mirror Y = %.6f\n', ...
+        trackedY(frameNumber));
+
+
+end
+
+
+%% ============================================================
+% CREATE INTERACTIVE SINGLE-PIXEL TRAJECTORY VIEWER
+% ============================================================
+
+currentFrame = 1;
+
+
+%% ============================================================
+% CREATE FIGURE
+% ============================================================
+
+hFig = uifigure( ...
+    'Name','Single-Pixel Star Trajectory', ...
+    'Position',[200 100 900 750]);
+
+
+%% ============================================================
+% CREATE AXES
+% ============================================================
+
+hAx = uiaxes( ...
+    hFig, ...
+    'Position',[100 180 700 500]);
+
+
+hAx.XDir = 'normal';
+
+hAx.YDir = 'reverse';
+
+
+%% ============================================================
+% SLIDER
+% ============================================================
+
+hSlider = uislider( ...
+    hFig, ...
+    'Position',[250 110 400 3]);
+
+
+hSlider.Limits = ...
+    [1 Nframes];
+
+
+hSlider.Value = 1;
+
+
+hSlider.MajorTicks = ...
+    1:Nframes;
+
+
+hSlider.MinorTicks = [];
+
+
+%% ============================================================
+% FRAME LABEL
+% ============================================================
+
+hFrameText = uilabel( ...
+    hFig, ...
+    'Position',[375 125 150 25]);
+
+
+hFrameText.Text = ...
+    sprintf('Frame %d / %d', ...
+    1,Nframes);
+
+
+hFrameText.HorizontalAlignment = ...
+    'center';
+
+
+%% ============================================================
+% PREVIOUS BUTTON
+% ============================================================
+
+hPrevious = uibutton( ...
+    hFig, ...
+    'push', ...
+    'Position',[200 55 120 35]);
+
+
+hPrevious.Text = ...
+    '< Previous';
+
+
+%% ============================================================
+% NEXT BUTTON
+% ============================================================
+
+hNext = uibutton( ...
+    hFig, ...
+    'push', ...
+    'Position',[580 55 120 35]);
+
+
+hNext.Text = ...
+    'Next >';
+
+
+%% ============================================================
+% DISPLAY FIRST FRAME
+% ============================================================
+
+updateDisplay();
+
+
+%% ============================================================
+% CALLBACKS
+% ============================================================
+
+hPrevious.ButtonPushedFcn = ...
+    @(src,event) previousFrame();
+
+
+hNext.ButtonPushedFcn = ...
+    @(src,event) nextFrame();
+
+
+hSlider.ValueChangedFcn = ...
+    @(src,event) sliderChanged();
+
+
+%% ============================================================
+% UPDATE DISPLAY
+% ============================================================
+
+    function updateDisplay()
+
+
+        frame = round(currentFrame);
+
+
+        hSlider.Value = frame;
+
+
+        %% ====================================================
+        % CREATE EMPTY 25 x 25 TRAJECTORY
+        % ====================================================
+
+        Trajectory_image = ...
+            zeros(Ny,Nx);
+
+
+        %% ====================================================
+        % ADD ONE PIXEL FOR EACH FRAME SO FAR
+        % ====================================================
+
+        for n = 1:frame
+
+
+            if ~isnan(pixelX(n)) && ...
+               ~isnan(pixelY(n))
+
+
+                Trajectory_image( ...
+                    pixelY(n), ...
+                    pixelX(n)) = 1;
+
+
+            end
+
+
+        end
+
+
+        %% ============================================================
+% DISPLAY SINGLE-PIXEL TRAJECTORY
+% ============================================================
+
+imagesc( ...
+    hAx, ...
+    rot90(Trajectory_image));
+
+axis(hAx,'image');
+
+colormap(hAx,gray);
+
+colorbar(hAx);
+
+hold(hAx,'on');
+
+
+%% ============================================================
+% CONVERT PIXEL POSITIONS FOR rot90()
+% ============================================================
+
+displayX = pixelY(1:frame);
+
+displayY = Nx - pixelX(1:frame) + 1;
+
+
+%% ============================================================
+% DRAW RED TRAJECTORY LINE
+% ============================================================
+
+if frame > 1
+
+    plot( ...
+        hAx, ...
+        displayX, ...
+        displayY, ...
+        'r-', ...
+        'LineWidth',2);
+
+end
+
+
+%% ============================================================
+% DRAW SINGLE-PIXEL STAR POSITIONS
+% ============================================================
+
+plot( ...
+    hAx, ...
+    displayX, ...
+    displayY, ...
+    'r.', ...
+    'MarkerSize',18);
+
+
+%% ============================================================
+% HIGHLIGHT CURRENT STAR POSITION
+% ============================================================
+
+plot( ...
+    hAx, ...
+    displayX(end), ...
+    displayY(end), ...
+    'r+', ...
+    'MarkerSize',16, ...
+    'LineWidth',2);
+
+
+%% ============================================================
+% TITLE
+% ============================================================
+
+title( ...
+    hAx, ...
+    sprintf( ...
+    'Single-Pixel Star Trajectory - Frame %d / %d', ...
+    frame,Nframes));
+
+
+xlabel(hAx,'Mirror X Position');
+
+ylabel(hAx,'Mirror Y Position');
+
+
+hold(hAx,'off');
+
+
+
+    end
+
+
+%% ============================================================
+% NEXT FRAME
+% ============================================================
+
+    function nextFrame()
+
+
+        if currentFrame < Nframes
+
+
+            currentFrame = ...
+                currentFrame + 1;
+
+
+            updateDisplay();
+
+
+        end
+
+
+    end
+
+
+%% ============================================================
+% PREVIOUS FRAME
+% ============================================================
+
+    function previousFrame()
+
+
+        if currentFrame > 1
+
+
+            currentFrame = ...
+                currentFrame - 1;
+
+
+            updateDisplay();
+
+
+        end
+
+
+    end
+
+
+%% ============================================================
+% SLIDER
+% ============================================================
+
+    function sliderChanged()
+
+
+        currentFrame = ...
+            round(hSlider.Value);
+
+
+        updateDisplay();
+
+
+    end
+
+
+%% ============================================================
+% FINAL SINGLE-PIXEL TRAJECTORY
+% ============================================================
+
+Trajectory_image = ...
+    zeros(Ny,Nx);
+
+
+for n = 1:Nframes
+
+
+    if ~isnan(pixelX(n)) && ...
+       ~isnan(pixelY(n))
+
+
+        Trajectory_image( ...
+            pixelY(n), ...
+            pixelX(n)) = 1;
+
+
+    end
+
+
+end
+
+
+%% ============================================================
+% FINAL FIGURE
+% ============================================================
+
+figure
+
+
+imagesc(rot90(Trajectory_image));
+
+
+axis image
+axis ij
+
+
+colormap(gray);
+
+colorbar;
+
+
+title('Final Single-Pixel Star Trajectory');
+
+
+xlabel('Mirror X Position');
+
+ylabel('Mirror Y Position');
+
+
+%% ============================================================
+% PRINT FINAL POSITIONS
+% ============================================================
+
+fprintf('\n')
+fprintf('===============================================\n')
+fprintf('       SINGLE-PIXEL STAR TRAJECTORY\n')
+fprintf('===============================================\n')
+
+fprintf('Frame        Pixel X        Pixel Y\n')
+fprintf('-----------------------------------------------\n')
+
+
+for n = 1:Nframes
+
+
+    fprintf( ...
+        '%3d          %3d            %3d\n', ...
+        n, ...
+        pixelX(n), ...
+        pixelY(n));
+
+
+end
+
+
+%% ============================================================
+% FRAME-TO-FRAME MOTION
+% ============================================================
+
+dx = diff(trackedX);
+
+dy = diff(trackedY);
+
+
+fprintf('\n')
+fprintf('Frame-to-frame motion:\n')
+fprintf('-----------------------------------------------\n')
+
+
+for n = 1:Nframes-1
+
+
+    fprintf( ...
+        'Frame %d -> %d : dx = %10.6f   dy = %10.6f\n', ...
+        n, ...
+        n+1, ...
+        dx(n), ...
+        dy(n));
+
+
+end
+
+
+%% ============================================================
+% AVERAGE VELOCITY
+% ============================================================
+
+vx = mean(dx,'omitnan');
+
+vy = mean(dy,'omitnan');
+
+
+fprintf('\n')
+fprintf('Average velocity:\n')
+
+fprintf( ...
+    'vx = %.6f mirror units/frame\n', ...
+    vx);
+
+fprintf( ...
+    'vy = %.6f mirror units/frame\n', ...
+    vy);
+
+
+%% ============================================================
+% TOTAL DISPLACEMENT
+% ============================================================
+
+totalDx = ...
+    trackedX(end) - trackedX(1);
+
+totalDy = ...
+    trackedY(end) - trackedY(1);
+
+
+fprintf('\n')
+fprintf('Total displacement:\n')
+
+fprintf( ...
+    'dx = %.6f\n', ...
+    totalDx);
+
+fprintf( ...
+    'dy = %.6f\n', ...
+    totalDy);
+
+
+%% ============================================================
+% TOTAL DISTANCE
+% ============================================================
+
+stepDistance = ...
+    sqrt(dx.^2 + dy.^2);
+
+
+totalDistance = ...
+    sum(stepDistance,'omitnan');
+
+
+fprintf('\n')
+
+fprintf( ...
+    'Total trajectory distance = %.6f mirror units\n', ...
+    totalDistance);
+
+
+end
