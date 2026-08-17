@@ -1,0 +1,495 @@
+%% ============================================================
+% MOVING OBJECT TRACKING FROM 5 CSV FRAMES
+%
+% Mirror Position
+%       ->
+% SPC Frame Reconstruction
+%       ->
+% Background Correction
+%       ->
+% High-Count Detection
+%       ->
+% Star Centre
+%       ->
+% Mirror X/Y Position
+%       ->
+% Trajectory
+% ============================================================
+
+clear; clc; close all
+
+%% ============================================================
+% SELECT 5 CSV FILES
+% ============================================================
+
+folder = '\\userfs\bh1308\w2k\Desktop\Single Photon Camera\CSV';
+
+[filenames, pathname] = uigetfile( ...
+    fullfile(folder,'*.csv'), ...
+    'Select 5 Photon Scan Files', ...
+    'MultiSelect','on');
+
+if isequal(filenames,0)
+    error('No files selected.');
+end
+
+if ischar(filenames)
+    filenames = {filenames};
+end
+
+Nframes = length(filenames);
+
+if Nframes ~= 5
+    error('Please select exactly 5 CSV files.');
+end
+
+
+%% ============================================================
+% SCAN PARAMETERS
+% ============================================================
+
+Nx = 25;
+Ny = 25;
+
+
+%% ============================================================
+% HIGH-COUNT REGION PARAMETERS
+% ============================================================
+
+thresholdFraction = 0.5;
+
+
+%% ============================================================
+% STORAGE
+% ============================================================
+
+Photon_images = cell(Nframes,1);
+Bright_regions = cell(Nframes,1);
+
+trackedX = zeros(Nframes,1);
+trackedY = zeros(Nframes,1);
+
+pixelX = zeros(Nframes,1);
+pixelY = zeros(Nframes,1);
+
+thresholds = zeros(Nframes,1);
+brightThresholds = zeros(Nframes,1);
+
+
+%% ============================================================
+% PROCESS EACH FRAME
+% ============================================================
+
+for frameNumber = 1:Nframes
+
+    fprintf('\n')
+    fprintf('========================================\n')
+    fprintf('Processing Frame %d\n',frameNumber)
+    fprintf('File: %s\n',filenames{frameNumber})
+    fprintf('========================================\n')
+
+
+    %% ========================================================
+    % LOAD CSV
+    % ========================================================
+
+    data = readtable(fullfile(pathname,filenames{frameNumber}));
+
+    mirrorX = data.X;
+    mirrorY = data.Y;
+    Counts  = data.Count;
+
+
+    %% ========================================================
+    % CONVERT MIRROR POSITIONS TO PIXEL POSITIONS
+    % ========================================================
+
+    x_grid = linspace(min(mirrorX), max(mirrorX), Nx);
+    y_grid = linspace(min(mirrorY), max(mirrorY), Ny);
+
+    SPC_counts = zeros(Ny,Nx);
+    SPC_visits = zeros(Ny,Nx);
+
+
+    for k = 1:length(Counts)
+
+        [~,x_index] = min(abs(x_grid - mirrorX(k)));
+        [~,y_index] = min(abs(y_grid - mirrorY(k)));
+
+        SPC_counts(y_index,x_index) = ...
+            SPC_counts(y_index,x_index) + Counts(k);
+
+        SPC_visits(y_index,x_index) = ...
+            SPC_visits(y_index,x_index) + 1;
+
+    end
+
+
+    %% ========================================================
+    % CALCULATE AVERAGE WHERE MEASUREMENTS EXIST
+    % ========================================================
+
+    SPC_frame = zeros(Ny,Nx);
+
+    valid = SPC_visits > 0;
+
+    SPC_frame(valid) = ...
+        SPC_counts(valid) ./ SPC_visits(valid);
+
+
+    %% ========================================================
+    % CALCULATE BACKGROUND THRESHOLD
+    % ========================================================
+
+    backgroundCounts = Counts;
+
+    backgroundmedian = median(backgroundCounts);
+    sigma = std(backgroundCounts);
+
+    k_threshold = -1;
+
+    threshold = backgroundmedian + ...
+                k_threshold*sigma;
+
+    thresholds(frameNumber) = threshold;
+
+    fprintf('Background Median = %.2f\n',backgroundmedian);
+    fprintf('Background SD     = %.2f\n',sigma);
+    fprintf('Threshold         = %.2f\n',threshold);
+
+
+    %% ========================================================
+    % BACKGROUND CORRECTION
+    % ========================================================
+
+    Photon_image = max(SPC_frame - threshold,0);
+
+    Photon_images{frameNumber} = Photon_image;
+
+
+    %% ========================================================
+    % DISPLAY BACKGROUND CORRECTED IMAGE
+    % ========================================================
+
+    figure
+
+    imagesc(rot90(Photon_image))
+
+    axis image
+    axis ij
+    colormap(gray)
+    colorbar
+
+    title(sprintf('Background Corrected - Frame %d', ...
+        frameNumber))
+
+    xlabel('Mirror X Position')
+    ylabel('Mirror Y Position')
+
+
+    %% ========================================================
+    % FIND MAXIMUM COUNT
+    % ========================================================
+
+    maxCount = max(Photon_image(:));
+
+    fprintf('\nMaximum background-corrected count = %.2f\n', ...
+        maxCount);
+
+
+    %% ========================================================
+    % HIGH-COUNT THRESHOLD
+    % ========================================================
+
+    brightThreshold = ...
+        thresholdFraction * maxCount;
+
+    brightThresholds(frameNumber) = ...
+        brightThreshold;
+
+    fprintf('High-count threshold = %.2f\n', ...
+        brightThreshold);
+
+
+    %% ========================================================
+    % CREATE HIGH-COUNT REGION
+    % ========================================================
+
+    brightRegion = Photon_image >= brightThreshold;
+
+    Bright_regions{frameNumber} = brightRegion;
+
+
+    %% ========================================================
+    % DISPLAY HIGH-COUNT REGION
+    % ========================================================
+
+    figure
+
+    imagesc(rot90(brightRegion))
+
+    axis image
+    axis ij
+    colormap(gray)
+    colorbar
+
+    title(sprintf('High-Count Region - Frame %d', ...
+        frameNumber))
+
+    xlabel('Mirror X Position')
+    ylabel('Mirror Y Position')
+
+
+    %% ========================================================
+    % CALCULATE CENTRE OF HIGH-COUNT REGION
+    % ========================================================
+
+    [Xgrid,Ygrid] = meshgrid(1:Nx,1:Ny);
+
+    Xbright = Xgrid(brightRegion);
+    Ybright = Ygrid(brightRegion);
+
+    Ibright = Photon_image(brightRegion);
+
+
+    %% ========================================================
+    % CHECK THAT SIGNAL EXISTS
+    % ========================================================
+
+    if isempty(Ibright) || sum(Ibright) == 0
+
+        warning('No high-count region found in Frame %d', ...
+            frameNumber);
+
+        trackedX(frameNumber) = NaN;
+        trackedY(frameNumber) = NaN;
+
+        continue
+
+    end
+
+
+    %% ========================================================
+    % INTENSITY-WEIGHTED CENTRE
+    % ========================================================
+
+    starCentreX = ...
+        sum(Xbright .* Ibright) / sum(Ibright);
+
+    starCentreY = ...
+        sum(Ybright .* Ibright) / sum(Ibright);
+
+
+    %% ========================================================
+    % STORE PIXEL CENTRE
+    % ========================================================
+
+    pixelX(frameNumber) = starCentreX;
+    pixelY(frameNumber) = starCentreY;
+
+
+    %% ========================================================
+    % MAP CENTRE TO MIRROR COORDINATES
+    % ========================================================
+
+    mirrorCentreX = interp1( ...
+        1:Nx, ...
+        x_grid, ...
+        starCentreX, ...
+        'linear');
+
+    mirrorCentreY = interp1( ...
+        1:Ny, ...
+        y_grid, ...
+        starCentreY, ...
+        'linear');
+
+
+    %% ========================================================
+    % STORE TRACKED POSITION
+    % ========================================================
+
+    trackedX(frameNumber) = mirrorCentreX;
+    trackedY(frameNumber) = mirrorCentreY;
+
+
+    %% ========================================================
+    % PRINT CENTRE
+    % ========================================================
+
+    fprintf('\n')
+    fprintf('Star centre:\n')
+
+    fprintf('Pixel X = %.3f\n',starCentreX);
+    fprintf('Pixel Y = %.3f\n',starCentreY);
+
+    fprintf('Mirror X = %.6f\n',mirrorCentreX);
+    fprintf('Mirror Y = %.6f\n',mirrorCentreY);
+
+end
+
+
+%% ============================================================
+% FINAL FIGURE:
+% ALL 5 BACKGROUND-CORRECTED FRAMES + DETECTED CENTRES
+% ============================================================
+
+figure
+
+for n = 1:Nframes
+
+    subplot(2,3,n)
+
+    imagesc(rot90(Photon_images{n}))
+
+    axis image
+    axis ij
+    colormap(gray)
+    colorbar
+
+    hold on
+
+    % Convert tracked mirror position back to pixel position
+    [~,x_pixel] = min(abs(x_grid - trackedX(n)));
+    [~,y_pixel] = min(abs(y_grid - trackedY(n)));
+
+    % Correct coordinate conversion for rot90()
+    displayX = y_pixel;
+    displayY = Nx - x_pixel + 1;
+
+    % Plot detected centre
+    plot(displayX,displayY, ...
+        'r+', ...
+        'MarkerSize',12, ...
+        'LineWidth',2)
+
+    title(sprintf('Frame %d',n))
+
+    hold off
+
+end
+
+sgtitle('Background Corrected Images and Detected Star Centres')
+
+
+%% ============================================================
+% CALCULATED STAR TRAJECTORY
+% ============================================================
+
+figure
+
+plot(trackedX,trackedY, ...
+    'r-o', ...
+    'LineWidth',2, ...
+    'MarkerSize',8)
+
+grid on
+axis equal
+
+xlabel('Mirror X Position')
+ylabel('Mirror Y Position')
+
+title('Calculated Star Trajectory')
+
+hold on
+
+
+%% ============================================================
+% LABEL EACH FRAME
+% ============================================================
+
+for n = 1:Nframes
+
+    text(trackedX(n), ...
+         trackedY(n), ...
+         sprintf('  Frame %d',n), ...
+         'FontSize',10)
+
+end
+
+hold off
+
+
+%% ============================================================
+% PRINT TRAJECTORY
+% ============================================================
+
+fprintf('\n')
+fprintf('===============================================\n')
+fprintf('             STAR TRAJECTORY\n')
+fprintf('===============================================\n')
+
+fprintf('Frame        X Position        Y Position\n')
+fprintf('-----------------------------------------------\n')
+
+for n = 1:Nframes
+
+    fprintf('%3d        %12.6f       %12.6f\n', ...
+        n, ...
+        trackedX(n), ...
+        trackedY(n));
+
+end
+
+
+%% ============================================================
+% FRAME-TO-FRAME MOTION
+% ============================================================
+
+dx = diff(trackedX);
+dy = diff(trackedY);
+
+fprintf('\n')
+fprintf('Frame-to-frame motion:\n')
+fprintf('-----------------------------------------------\n')
+
+for n = 1:Nframes-1
+
+    fprintf('Frame %d -> %d :  dx = %10.6f   dy = %10.6f\n', ...
+        n, ...
+        n+1, ...
+        dx(n), ...
+        dy(n));
+
+end
+
+
+%% ============================================================
+% AVERAGE VELOCITY
+% ============================================================
+
+vx = mean(dx,'omitnan');
+vy = mean(dy,'omitnan');
+
+fprintf('\n')
+fprintf('Average velocity:\n')
+
+fprintf('vx = %.6f mirror units/frame\n',vx)
+fprintf('vy = %.6f mirror units/frame\n',vy)
+
+
+%% ============================================================
+% TOTAL DISPLACEMENT
+% ============================================================
+
+totalDx = trackedX(end) - trackedX(1);
+totalDy = trackedY(end) - trackedY(1);
+
+fprintf('\n')
+fprintf('Total displacement:\n')
+
+fprintf('dx = %.6f\n',totalDx)
+fprintf('dy = %.6f\n',totalDy)
+
+
+%% ============================================================
+% TOTAL TRAJECTORY DISTANCE
+% ============================================================
+
+stepDistance = sqrt(dx.^2 + dy.^2);
+
+totalDistance = sum(stepDistance,'omitnan');
+
+fprintf('\n')
+fprintf('Total trajectory distance = %.6f mirror units\n', ...
+    totalDistance)
