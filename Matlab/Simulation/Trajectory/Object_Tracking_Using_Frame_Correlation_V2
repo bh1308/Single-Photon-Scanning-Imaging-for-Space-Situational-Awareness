@@ -1,0 +1,262 @@
+%% ============================================================
+% MOVING OBJECT TRACKING USING STATIC STARS AS A REFERENCE
+% ============================================================
+
+clear; clc; close all
+
+%% Image size
+
+Nx = 100;
+Ny = 100;
+
+%% Number of frames
+
+Nframes = 10;
+
+%% ------------------------------------------------------------
+% CREATE STATIC STAR FIELD
+% ------------------------------------------------------------
+
+starImage = zeros(Ny,Nx);
+
+rng(1)
+
+Nstars = 40;
+
+for k = 1:Nstars
+
+    x = randi([5 Nx-5]);
+    y = randi([5 Ny-5]);
+
+    starImage(y,x) = 300;
+
+end
+
+%% Gaussian PSF
+
+PSF = fspecial('gaussian',[7 7],1.2);
+
+starImage = imfilter(starImage,PSF,'same');
+
+%% ------------------------------------------------------------
+% MOVING OBJECT
+% ------------------------------------------------------------
+
+startX = 20;
+startY = 30;
+
+vx = 2;          % pixels/frame
+vy = 1;          % pixels/frame
+
+movingObjectIntensity = 300;   % SAME brightness as stars
+
+Frames = cell(Nframes,1);
+
+trueX = zeros(Nframes,1);
+trueY = zeros(Nframes,1);
+
+%% ------------------------------------------------------------
+% GENERATE FRAMES
+% ------------------------------------------------------------
+
+for n = 1:Nframes
+
+    % Start with static star field
+    image = starImage;
+
+    % Position of moving object
+    x = round(startX + (n-1)*vx);
+    y = round(startY + (n-1)*vy);
+
+    trueX(n) = x;
+    trueY(n) = y;
+
+    % Add moving object
+    image(y,x) = image(y,x) + movingObjectIntensity;
+
+    % Apply PSF
+    image = imfilter(image,PSF,'same');
+
+    % Simulate photon counting
+    image = poissrnd(image);
+
+    % Store frame
+    Frames{n} = image;
+
+end
+
+%% ------------------------------------------------------------
+% DISPLAY SIMULATED FRAMES
+% ------------------------------------------------------------
+
+figure
+
+for n = 1:Nframes
+
+    imagesc(Frames{n})
+    axis image
+    colormap(gray)
+    colorbar
+
+    title(sprintf('Frame %d',n))
+
+    hold on
+
+    % Show true moving-object position
+    plot(trueX(n),trueY(n),'r+','MarkerSize',10,'LineWidth',2)
+
+    hold off
+
+    drawnow
+    pause(0.2)
+
+end
+
+%% ------------------------------------------------------------
+% CREATE STATIC REFERENCE
+% ------------------------------------------------------------
+
+% The reference contains ONLY the static stars.
+reference = poissrnd(starImage);
+
+%% Display reference
+
+figure
+
+imagesc(reference)
+axis image
+colormap(gray)
+colorbar
+
+title('Static Star Reference')
+
+%% ------------------------------------------------------------
+% REMOVE STATIC STARS
+% ------------------------------------------------------------
+
+ResidualFrames = cell(Nframes,1);
+
+for n = 1:Nframes
+
+    frame = Frames{n};
+
+    % Subtract reference star field
+    residual = frame - reference;
+
+    % Remove negative values
+    residual(residual < 0) = 0;
+
+    ResidualFrames{n} = residual;
+
+end
+
+%% ------------------------------------------------------------
+% DISPLAY RESIDUAL FRAMES
+% ------------------------------------------------------------
+
+figure
+
+for n = 1:Nframes
+
+    imagesc(ResidualFrames{n})
+    axis image
+    colormap(gray)
+    colorbar
+
+    title(sprintf('Residual Frame %d',n))
+
+    hold on
+
+    % True position
+    plot(trueX(n),trueY(n),'r+','MarkerSize',10,'LineWidth',2)
+
+    hold off
+
+    drawnow
+    pause(0.2)
+
+end
+
+%% ------------------------------------------------------------
+% FIND MOVING OBJECT
+% ------------------------------------------------------------
+
+trackedX = zeros(Nframes,1);
+trackedY = zeros(Nframes,1);
+
+for n = 1:Nframes
+
+    residual = ResidualFrames{n};
+
+    % Find maximum residual value
+    [~,index] = max(residual(:));
+
+    [y,x] = ind2sub(size(residual),index);
+
+    trackedX(n) = x;
+    trackedY(n) = y;
+
+end
+
+%% ------------------------------------------------------------
+% DISPLAY TRACKED POSITIONS
+% ------------------------------------------------------------
+
+figure
+
+imagesc(starImage)
+axis image
+colormap(gray)
+colorbar
+
+hold on
+
+% Plot measured trajectory
+plot(trackedX,trackedY,'r-o','LineWidth',2)
+
+% Plot true trajectory
+plot(trueX,trueY,'b--','LineWidth',1.5)
+
+legend('Tracked position','True position')
+
+title('Moving Object Tracking')
+
+xlabel('X position (pixels)')
+ylabel('Y position (pixels)')
+
+hold off
+
+%% ------------------------------------------------------------
+% PRINT RESULTS
+% ------------------------------------------------------------
+
+fprintf('\n')
+fprintf('Frame     True X     True Y     Tracked X     Tracked Y\n')
+fprintf('----------------------------------------------------------\n')
+
+for n = 1:Nframes
+
+    fprintf('%3d       %6.1f     %6.1f       %6.1f        %6.1f\n', ...
+        n,trueX(n),trueY(n),trackedX(n),trackedY(n));
+
+end
+
+%% ------------------------------------------------------------
+% ESTIMATE MOTION
+% ------------------------------------------------------------
+
+dx = diff(trackedX);
+dy = diff(trackedY);
+
+fprintf('\nEstimated frame-to-frame motion:\n')
+
+for n = 1:Nframes-1
+
+    fprintf('Frame %d -> %d : dx = %.1f   dy = %.1f\n', ...
+        n,n+1,dx(n),dy(n));
+
+end
+
+fprintf('\nAverage velocity:\n')
+fprintf('vx = %.2f pixels/frame\n',mean(dx))
+fprintf('vy = %.2f pixels/frame\n',mean(dy))
