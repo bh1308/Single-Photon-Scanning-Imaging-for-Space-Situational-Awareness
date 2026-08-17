@@ -1,0 +1,236 @@
+%% ============================================================
+% SINGLE PHOTON CAMERA REAL DATA RECONSTRUCTION
+% Mirror Position -> SPC Frame -> Background Correction -> Richardson-Lucy
+% ============================================================
+
+clear; clc; close all
+
+%% ============================================================
+% READ PHOTON COUNT CSV
+% ============================================================
+
+folder = '\\userfs\bh1308\w2k\Desktop\Single Photon Camera\CSV';
+
+filename = uigetfile(fullfile(folder,'*.csv'), ...
+    'Select Photon Scan File');
+
+data = readtable(fullfile(folder, filename));
+
+%% ============================================================
+% EXTRACT DATA
+% ============================================================
+
+mirrorX = data.X;
+mirrorY = data.Y;
+Counts  = data.Count;
+%% ============================================================
+% AUTOMATICALLY DETECT SCAN GRID SIZE
+% ============================================================
+
+% Sort the mirror positions
+x_sorted = sort(mirrorX);
+y_sorted = sort(mirrorY);
+
+% Calculate differences between consecutive positions
+dx = diff(x_sorted);
+dy = diff(y_sorted);
+
+% Remove extremely small numerical differences
+dx_nonzero = dx(dx > 1e-10);
+dy_nonzero = dy(dy > 1e-10);
+
+% Estimate typical spacing between scan positions
+dx_spacing = median(dx_nonzero);
+dy_spacing = median(dy_nonzero);
+
+% Tolerance for deciding whether two positions are the same
+% scan position
+x_tolerance = dx_spacing * 0.25;
+y_tolerance = dy_spacing * 0.25;
+
+%% ------------------------------------------------------------
+% FIND UNIQUE X POSITIONS
+% ------------------------------------------------------------
+
+x_grid = x_sorted(1);
+
+for k = 2:length(x_sorted)
+
+    if abs(x_sorted(k) - x_grid(end)) > x_tolerance
+        x_grid(end+1) = x_sorted(k);
+    end
+
+end
+
+%% ------------------------------------------------------------
+% FIND UNIQUE Y POSITIONS
+% ------------------------------------------------------------
+
+y_grid = y_sorted(1);
+
+for k = 2:length(y_sorted)
+
+    if abs(y_sorted(k) - y_grid(end)) > y_tolerance
+        y_grid(end+1) = y_sorted(k);
+    end
+
+end
+
+%% ------------------------------------------------------------
+% GRID SIZE
+% ------------------------------------------------------------
+
+Nx = length(x_grid);
+Ny = length(y_grid);
+
+fprintf('\n============================================\n');
+fprintf('AUTOMATIC SCAN GRID DETECTION\n');
+fprintf('============================================\n');
+
+fprintf('Detected X positions : %d\n',Nx);
+fprintf('Detected Y positions : %d\n',Ny);
+
+fprintf('Detected grid size   : %d x %d\n',Nx,Ny);
+
+fprintf('X spacing             : %.8f\n',dx_spacing);
+fprintf('Y spacing             : %.8f\n',dy_spacing);
+
+fprintf('============================================\n\n');
+
+%% ============================================================
+% CONVERT MIRROR POSITIONS TO PIXEL POSITIONS
+% ============================================================
+
+x_grid = linspace(min(mirrorX), max(mirrorX), Nx);
+y_grid = linspace(min(mirrorY), max(mirrorY), Ny);
+
+SPC_counts = zeros(Ny,Nx);
+SPC_visits = zeros(Ny,Nx);
+
+for k = 1:length(Counts)
+
+    [~,x_index] = min(abs(x_grid - mirrorX(k)));
+    [~,y_index] = min(abs(y_grid - mirrorY(k)));
+
+    % Accumulate counts
+    SPC_counts(y_index,x_index) = SPC_counts(y_index,x_index) + Counts(k);
+
+    % Count how many measurements landed here
+    SPC_visits(y_index,x_index) = SPC_visits(y_index,x_index) + 1;
+
+end
+
+% Calculate average where measurements exist
+SPC_frame = zeros(Ny,Nx);
+
+valid = SPC_visits > 0;
+
+SPC_frame(valid) = SPC_counts(valid) ./ SPC_visits(valid);
+
+%% ============================================================
+% SAVE RAW IMAGE
+% ============================================================
+
+SPC_frame_raw = SPC_frame;
+
+%% ============================================================
+% CALCULATE BACKGROUND THRESHOLD
+% ============================================================
+%% calculated using median instead as bright counts affected mean too much
+
+backgroundCounts = Counts;
+
+backgroundmedian = median(backgroundCounts);
+sigma = std(backgroundCounts);
+
+k = -0.1;                         % Number of standard deviations
+
+threshold = backgroundmedian + k*sigma;
+
+fprintf('Background Median = %.2f\n',backgroundmedian);
+fprintf('Background SD   = %.2f\n',sigma);
+fprintf('Threshold       = %.2f\n',threshold);
+
+%% ============================================================
+% BACKGROUND CORRECTION
+% ============================================================
+
+SPC_frame_corrected = SPC_frame_raw;
+
+% Subtract threshold
+
+SPC_frame_corrected = max(SPC_frame_raw - threshold, 0);
+
+Photon_image = SPC_frame_corrected;
+
+%% ============================================================
+% DISPLAY RAW IMAGE
+% ============================================================
+
+figure
+
+imagesc(rot90(SPC_frame_raw))
+
+axis image
+axis ij
+colormap(gray)
+colorbar
+
+title('Raw SPC Photon Count Frame')
+
+xlabel('Mirror X Position')
+ylabel('Mirror Y Position')
+
+%% ============================================================
+% DISPLAY BACKGROUND CORRECTED IMAGE
+% ============================================================
+
+figure
+
+imagesc(rot90(Photon_image))
+
+axis image
+axis ij
+colormap(gray)
+colorbar
+
+title('Background Corrected SPC Image')
+
+xlabel('Mirror X Position')
+ylabel('Mirror Y Position')
+
+%% ============================================================
+% PSF MODEL
+% ============================================================
+
+PSF_SIGMA = 0.7;
+
+PSF = fspecial('gaussian',[7 7],PSF_SIGMA);
+
+
+%% ============================================================
+% RICHARDSON-LUCY DECONVOLUTION
+% ============================================================
+
+iterations = 5;
+
+RL_image = deconvlucy(Photon_image, PSF, iterations);
+
+%% ============================================================
+% DISPLAY RICHARDSON-LUCY IMAGE
+% ============================================================
+
+figure
+
+imagesc(rot90(RL_image))
+
+axis image
+axis ij
+colormap(gray)
+colorbar
+
+title('Richardson-Lucy Reconstructed Image')
+
+xlabel('Mirror X Position')
+ylabel('Mirror Y Position')
+
