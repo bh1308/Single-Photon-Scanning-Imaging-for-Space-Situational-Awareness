@@ -1,0 +1,69 @@
+clc
+clear
+
+% Camera parameters
+IMAGE_WIDTH = 512;
+IMAGE_HEIGHT = 512;
+
+PSF_SIGMA = 1.2;
+READ_NOISE = 3;
+BIT_DEPTH = 8;
+
+% Empty image
+image = zeros(IMAGE_HEIGHT, IMAGE_WIDTH);
+
+% Star list [x y brightness]
+stars = [
+    100.35 120.72 1200;
+    250.81  80.45 1800;
+    390.62 320.91  900;
+    180.44 410.58 1500;
+    430.18 200.34 2200;
+     60.75 300.85  700
+];
+
+% Draw each star
+for i = 1:size(stars,1)
+
+    x0 = stars(i,1);
+    y0 = stars(i,2);
+    brightness = stars(i,3);
+
+    radius = ceil(4*PSF_SIGMA);
+
+    xmin = max(1,floor(x0)-radius);
+    xmax = min(IMAGE_WIDTH,floor(x0)+radius);
+
+    ymin = max(1,floor(y0)-radius);
+    ymax = min(IMAGE_HEIGHT,floor(y0)+radius);
+
+    [X,Y] = meshgrid(xmin:xmax,ymin:ymax);
+
+    gaussian = brightness * exp( ...
+        -((X-x0).^2 + (Y-y0).^2)/(2*PSF_SIGMA^2));
+
+    image(ymin:ymax,xmin:xmax) = ...
+        image(ymin:ymax,xmin:xmax) + gaussian;
+
+end
+
+% Add photon noise
+image = poissrnd(image);
+
+% Add read noise
+image = image + READ_NOISE*randn(size(image));
+
+% Clip to detector range
+max_value = 2^BIT_DEPTH - 1;
+image(image<0) = 0;
+image(image>max_value) = max_value;
+
+% Display
+figure
+imagesc(image)
+axis image
+colormap(gray)
+colorbar
+title('Simulated Star Camera Image')
+xlabel('Pixel')
+ylabel('Pixel')
