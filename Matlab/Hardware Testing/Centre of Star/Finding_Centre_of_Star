@@ -1,0 +1,342 @@
+%% ============================================================
+% SINGLE PHOTON CAMERA REAL DATA RECONSTRUCTION
+% Mirror Position -> SPC Frame -> Background Correction
+% -> Richardson-Lucy -> Star Centre
+% ============================================================
+
+clear; clc; close all
+
+%% ============================================================
+% READ PHOTON COUNT CSV
+% ============================================================
+
+folder = '\\userfs\bh1308\w2k\Desktop\Single Photon Camera\CSV';
+
+filename = uigetfile(fullfile(folder,'*.csv'), ...
+    'Select Photon Scan File');
+
+if isequal(filename,0)
+    error('No file selected.');
+end
+
+data = readtable(fullfile(folder, filename));
+
+%% ============================================================
+% EXTRACT DATA
+% ============================================================
+
+mirrorX = data.X;
+mirrorY = data.Y;
+Counts  = data.Count;
+
+%% ============================================================
+% SCAN PARAMETERS
+% ============================================================
+
+Nx = 25;
+Ny = 25;
+
+%% ============================================================
+% CONVERT MIRROR POSITIONS TO PIXEL POSITIONS
+% ============================================================
+
+x_grid = linspace(min(mirrorX), max(mirrorX), Nx);
+y_grid = linspace(min(mirrorY), max(mirrorY), Ny);
+
+SPC_counts = zeros(Ny,Nx);
+SPC_visits = zeros(Ny,Nx);
+
+for k = 1:length(Counts)
+
+    [~,x_index] = min(abs(x_grid - mirrorX(k)));
+    [~,y_index] = min(abs(y_grid - mirrorY(k)));
+
+    % Accumulate counts
+    SPC_counts(y_index,x_index) = ...
+        SPC_counts(y_index,x_index) + Counts(k);
+
+    % Count how many measurements landed here
+    SPC_visits(y_index,x_index) = ...
+        SPC_visits(y_index,x_index) + 1;
+
+end
+
+%% ============================================================
+% CALCULATE AVERAGE WHERE MEASUREMENTS EXIST
+% ============================================================
+
+SPC_frame = zeros(Ny,Nx);
+
+valid = SPC_visits > 0;
+
+SPC_frame(valid) = ...
+    SPC_counts(valid) ./ SPC_visits(valid);
+
+%% ============================================================
+% SAVE RAW IMAGE
+% ============================================================
+
+SPC_frame_raw = SPC_frame;
+
+%% ============================================================
+% CALCULATE BACKGROUND THRESHOLD
+% ============================================================
+
+backgroundCounts = Counts;
+
+backgroundmedian = median(backgroundCounts);
+sigma = std(backgroundCounts);
+
+k = -1;
+
+threshold = backgroundmedian + k*sigma;
+
+fprintf('Background Median = %.2f\n',backgroundmedian);
+fprintf('Background SD     = %.2f\n',sigma);
+fprintf('Threshold         = %.2f\n',threshold);
+
+%% ============================================================
+% BACKGROUND CORRECTION
+% ============================================================
+
+SPC_frame_corrected = max(SPC_frame_raw - threshold,0);
+
+Photon_image = SPC_frame_corrected;
+
+%% ============================================================
+% DISPLAY RAW IMAGE
+% ============================================================
+
+figure
+
+imagesc(rot90(SPC_frame_raw))
+
+axis image
+axis ij
+colormap(gray)
+colorbar
+
+title('Raw SPC Photon Count Frame')
+
+xlabel('Mirror X Position')
+ylabel('Mirror Y Position')
+
+%% ============================================================
+% DISPLAY BACKGROUND CORRECTED IMAGE
+% ============================================================
+
+figure
+
+imagesc(rot90(Photon_image))
+
+axis image
+axis ij
+colormap(gray)
+colorbar
+
+title('Background Corrected SPC Image')
+
+xlabel('Mirror X Position')
+ylabel('Mirror Y Position')
+
+%% ============================================================
+% PSF MODEL
+% ============================================================
+
+PSF_SIGMA = 0.7;
+
+PSF = fspecial('gaussian',[7 7],PSF_SIGMA);
+
+%% ============================================================
+% RICHARDSON-LUCY DECONVOLUTION
+% ============================================================
+
+iterations = 5;
+
+RL_image = deconvlucy(Photon_image, PSF, iterations);
+
+%% ============================================================
+% DISPLAY RICHARDSON-LUCY IMAGE
+% ============================================================
+
+figure
+
+imagesc(rot90(RL_image))
+
+axis image
+axis ij
+colormap(gray)
+colorbar
+
+title('Richardson-Lucy Reconstructed Image')
+
+xlabel('Mirror X Position')
+ylabel('Mirror Y Position')
+
+%% ============================================================
+% FIND CENTRE OF HIGH-COUNT GAUSSIAN SPOT
+% ============================================================
+
+% Use Richardson-Lucy image
+image = RL_image;
+
+% Remove negative values
+image(image < 0) = 0;
+
+%% ------------------------------------------------------------
+% FIND MAXIMUM COUNT
+% ------------------------------------------------------------
+
+maxCount = max(image(:));
+
+fprintf('\nMaximum count in RL image = %.2f\n',maxCount);
+
+%% ------------------------------------------------------------
+% CREATE THRESHOLD FOR BRIGHT REGION
+% ------------------------------------------------------------
+
+% Percentage of maximum intensity to include
+thresholdFraction = 0.5;
+
+brightThreshold = thresholdFraction * maxCount;
+
+fprintf('Bright region threshold = %.2f\n',brightThreshold);
+
+%% ------------------------------------------------------------
+% CREATE MASK OF HIGH-COUNT REGION
+% ------------------------------------------------------------
+
+brightRegion = image >= brightThreshold;
+
+%% ------------------------------------------------------------
+% DISPLAY HIGH-COUNT REGION
+% ------------------------------------------------------------
+
+figure
+
+imagesc(rot90(brightRegion))
+
+axis image
+axis ij
+colormap(gray)
+colorbar
+
+title('High-Count Region')
+
+xlabel('Mirror X Position')
+ylabel('Mirror Y Position')
+
+%% ------------------------------------------------------------
+% CALCULATE CENTRE OF BRIGHT REGION
+% ------------------------------------------------------------
+
+% Pixel coordinate grids
+[Xgrid,Ygrid] = meshgrid(1:Nx,1:Ny);
+
+% Only use pixels inside bright region
+Xbright = Xgrid(brightRegion);
+Ybright = Ygrid(brightRegion);
+
+Ibright = image(brightRegion);
+
+% Intensity-weighted centre
+starCentreX = sum(Xbright .* Ibright) / sum(Ibright);
+starCentreY = sum(Ybright .* Ibright) / sum(Ibright);
+
+fprintf('\n')
+fprintf('============================================\n')
+fprintf('       HIGH-COUNT STAR CENTRE\n')
+fprintf('============================================\n')
+
+fprintf('Pixel X = %.3f\n',starCentreX);
+fprintf('Pixel Y = %.3f\n',starCentreY);
+
+%% ============================================================
+% MAP CENTRE TO MIRROR COORDINATES
+% ============================================================
+
+mirrorCentreX = interp1( ...
+    1:Nx, ...
+    x_grid, ...
+    starCentreX, ...
+    'linear');
+
+mirrorCentreY = interp1( ...
+    1:Ny, ...
+    y_grid, ...
+    starCentreY, ...
+    'linear');
+
+fprintf('\n')
+
+fprintf('Mirror X = %.6f\n',mirrorCentreX);
+fprintf('Mirror Y = %.6f\n',mirrorCentreY);
+
+%% ============================================================
+% DISPLAY STAR WITH CENTRE
+% ============================================================
+
+figure
+
+imagesc(rot90(image))
+
+axis image
+axis ij
+colormap(gray)
+colorbar
+
+hold on
+
+% Convert coordinates for rot90() display
+displayX = starCentreY;
+displayY = Nx - starCentreX + 1;
+
+plot(displayX,displayY, ...
+    'r+', ...
+    'MarkerSize',15, ...
+    'LineWidth',3)
+
+title('Star Centre')
+
+xlabel('Mirror X Position')
+ylabel('Mirror Y Position')
+
+legend('Calculated Centre')
+
+hold off
+
+%% ============================================================
+% MAP STAR CENTRE TO MIRROR COORDINATES
+% ============================================================
+
+% Interpolate between grid positions rather than rounding
+mirrorCentreX = interp1( ...
+    1:Nx, ...
+    x_grid, ...
+    starCentreX, ...
+    'linear');
+
+mirrorCentreY = interp1( ...
+    1:Ny, ...
+    y_grid, ...
+    starCentreY, ...
+    'linear');
+
+%% ============================================================
+% PRINT STAR CENTRE
+% ============================================================
+
+fprintf('\n')
+fprintf('============================================\n')
+fprintf('             STAR CENTRE\n')
+fprintf('============================================\n')
+
+fprintf('Pixel X position  = %.3f\n',starCentreX)
+fprintf('Pixel Y position  = %.3f\n',starCentreY)
+
+fprintf('\n')
+
+fprintf('Mirror X position = %.6f\n',mirrorCentreX)
+fprintf('Mirror Y position = %.6f\n',mirrorCentreY)
+
+fprintf('============================================\n')
