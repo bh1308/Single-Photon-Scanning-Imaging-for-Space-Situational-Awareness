@@ -1,0 +1,162 @@
+clc
+clear
+close all
+
+%% ============================================================
+% 1. STAR MAP PARAMETERS
+% =============================================================
+
+STAR_WIDTH  = 100;
+STAR_HEIGHT = 100;
+
+% Width of the Gaussian star PSF
+PSF_SIGMA = 1.2;
+
+% Empty star map
+starMap = zeros(STAR_HEIGHT, STAR_WIDTH);
+
+% [x, y, brightness]
+stars = [
+    20, 30, 100;
+    45, 35, 200;
+    70, 50, 150;
+    80, 75, 250;
+    35, 80, 180;
+    60, 90, 120
+];
+
+
+%% ============================================================
+% 2. GENERATE GAUSSIAN STARS
+% =============================================================
+
+for k = 1:size(stars,1)
+
+    x0 = stars(k,1);
+    y0 = stars(k,2);
+    brightness = stars(k,3);
+
+    % Number of pixels used around the star
+    radius = ceil(4*PSF_SIGMA);
+
+    xmin = max(1, floor(x0)-radius);
+    xmax = min(STAR_WIDTH, floor(x0)+radius);
+
+    ymin = max(1, floor(y0)-radius);
+    ymax = min(STAR_HEIGHT, floor(y0)+radius);
+
+    % Pixel coordinates
+    [X,Y] = meshgrid(xmin:xmax, ymin:ymax);
+
+    % 2D Gaussian PSF
+    gaussian = brightness * exp( ...
+        -((X-x0).^2 + (Y-y0).^2) / ...
+        (2*PSF_SIGMA^2));
+
+    % Add Gaussian star to star map
+    starMap(ymin:ymax, xmin:xmax) = ...
+        starMap(ymin:ymax, xmin:xmax) + gaussian;
+
+end
+
+
+%% ============================================================
+% 3. DEFINE SPC FIELD OF VIEW
+% =============================================================
+
+FOV_SIZE = 8;
+
+radius = floor(FOV_SIZE/2);
+
+[x,y] = meshgrid(-radius:radius, -radius:radius);
+
+% Circular FOV
+FOV = (x.^2 + y.^2 <= radius^2);
+
+
+%% ============================================================
+% 4. DISPLAY STAR MAP
+% =============================================================
+
+figure
+
+imagesc(starMap)
+
+axis image
+colormap(gray)
+colorbar
+
+title('Gaussian Star Map')
+xlabel('X Pixel')
+ylabel('Y Pixel')
+
+
+%% ============================================================
+% 5. DISPLAY SPC FOV
+% =============================================================
+
+figure
+
+imagesc(FOV)
+
+axis image
+colormap(gray)
+colorbar
+
+title('SPC Field of View')
+xlabel('FOV X')
+ylabel('FOV Y')
+
+
+%% ============================================================
+% 6. SCAN FOV ACROSS STAR MAP
+% =============================================================
+
+SPC_frame = zeros(STAR_HEIGHT, STAR_WIDTH);
+
+for scanY = 1:STAR_HEIGHT
+
+    for scanX = 1:STAR_WIDTH
+
+        % FOV boundaries
+        xmin = scanX - radius;
+        xmax = scanX + radius;
+
+        ymin = scanY - radius;
+        ymax = scanY + radius;
+
+        % Make sure FOV remains inside star map
+        if xmin < 1 || xmax > STAR_WIDTH || ...
+           ymin < 1 || ymax > STAR_HEIGHT
+
+            continue
+
+        end
+
+        % Region currently observed by SPC
+        localScene = starMap(ymin:ymax, xmin:xmax);
+
+        % Total light collected inside FOV
+        SPC_frame(scanY,scanX) = ...
+            sum(localScene(FOV));
+
+    end
+
+end
+
+
+%% ============================================================
+% 7. DISPLAY SPC FRAME
+% =============================================================
+
+figure
+
+imagesc(SPC_frame)
+
+axis image
+colormap(gray)
+colorbar
+
+title('SPC Frame')
+xlabel('Scan X')
+ylabel('Scan Y')
