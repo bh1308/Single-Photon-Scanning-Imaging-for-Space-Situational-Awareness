@@ -1,0 +1,106 @@
+%% ============================================================
+% MOVING OBJECT TRACKING USING FRAME CORRELATION
+% ============================================================
+
+clear; clc; close all
+
+%% Image size
+
+Nx = 100;
+Ny = 100;
+
+%% Number of frames
+
+Nframes = 10;
+
+%% Static star field
+
+starImage = zeros(Ny,Nx);
+
+rng(1)
+
+Nstars = 40;
+
+for k = 1:Nstars
+
+    x = randi([5 Nx-5]);
+    y = randi([5 Ny-5]);
+
+    starImage(y,x) = 300;
+
+end
+
+%% Gaussian PSF
+
+PSF = fspecial('gaussian',[7 7],1.2);
+
+starImage = imfilter(starImage,PSF,'same');
+
+%% Moving object
+
+startX = 20;
+startY = 30;
+
+vx = 2;      % pixels/frame
+vy = 1;
+
+Frames = cell(Nframes,1);
+
+%% Generate frames
+
+for n = 1:Nframes
+
+    image = starImage;
+
+    x = round(startX + (n-1)*vx);
+    y = round(startY + (n-1)*vy);
+
+    image(y,x) = image(y,x) + 1000;
+
+    image = imfilter(image,PSF,'same');
+
+    % Simulate photon counting
+
+    image = poissrnd(image);
+
+    Frames{n} = image;
+
+end
+
+%% Display movie
+
+figure
+
+for n = 1:Nframes
+
+    imagesc(Frames{n})
+
+    axis image
+    colormap(gray)
+    colorbar
+
+    title(sprintf('Frame %d',n))
+
+    drawnow
+    pause(0.2)
+
+end
+
+%% Correlate consecutive frames
+
+for n = 1:Nframes-1
+
+    A = Frames{n};
+    B = Frames{n+1};
+
+    C = normxcorr2(A,B);
+
+    [ypeak,xpeak] = find(C==max(C(:)));
+
+    dx = xpeak - size(A,2);
+    dy = ypeak - size(A,1);
+
+    fprintf('Frame %d -> %d : dx = %d   dy = %d\n', ...
+        n,n+1,dx,dy);
+
+end
