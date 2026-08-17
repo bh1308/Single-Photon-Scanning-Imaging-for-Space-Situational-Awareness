@@ -1,0 +1,381 @@
+%% ============================================================
+% SINGLE PHOTON CAMERA
+% POISSON + SMOOTHNESS REGULARISED RECONSTRUCTION
+%
+% Based on the approach described in:
+% Mertens et al., "Image reconstruction from photon sparse data"
+% Scientific Reports (2017)
+%
+% Pipeline:
+% CSV
+%  ↓
+% SPC frame
+%  ↓
+% Background correction
+%  ↓
+% Threshold
+%  ↓
+% Richardson-Lucy
+%  ↓
+% Poisson + smoothness reconstruction
+% ============================================================
+
+clear
+clc
+close all
+
+%% ============================================================
+% READ PHOTON COUNT CSV
+% ============================================================
+
+folder = '\\userfs\bh1308\w2k\Desktop\Single Photon Camera\CSV';
+
+filename = uigetfile(fullfile(folder,'*.csv'), ...
+    'Select Photon Scan File');
+
+data = readtable(fullfile(folder,filename));
+
+%% ============================================================
+% EXTRACT DATA
+% ============================================================
+
+mirrorX = data.X;
+mirrorY = data.Y;
+Counts  = data.Count;
+
+%% ============================================================
+% SCAN PARAMETERS
+% ============================================================
+
+Nx = 50;
+Ny = 50;
+
+%% ============================================================
+% CONVERT MIRROR POSITIONS TO SPC IMAGE
+% ============================================================
+
+x_grid = linspace(min(mirrorX),max(mirrorX),Nx);
+y_grid = linspace(min(mirrorY),max(mirrorY),Ny);
+
+SPC_frame = zeros(Ny,Nx);
+
+for k = 1:length(Counts)
+
+    [~,x_index] = min(abs(x_grid-mirrorX(k)));
+    [~,y_index] = min(abs(y_grid-mirrorY(k)));
+
+    SPC_frame(y_index,x_index) = Counts(k);
+
+end
+
+%% ============================================================
+% RAW IMAGE
+% ============================================================
+
+SPC_raw = SPC_frame;
+
+%% ============================================================
+% BACKGROUND ESTIMATION
+% ============================================================
+
+backgroundMedian = median(Counts);
+
+backgroundSD = std(Counts);
+
+fprintf('\n')
+fprintf('Background median = %.2f\n',backgroundMedian)
+fprintf('Background SD     = %.2f\n',backgroundSD)
+
+%% ============================================================
+% BACKGROUND CORRECTION
+% ============================================================
+
+Photon_image = SPC_raw - backgroundMedian;
+
+Photon_image(Photon_image < 0) = 0;
+
+%% ============================================================
+% OPTIONAL BACKGROUND THRESHOLD
+% ============================================================
+
+sigmaMultiplier = 1;
+
+threshold = sigmaMultiplier * backgroundSD;
+
+Photon_thresholded = Photon_image;
+
+Photon_thresholded( ...
+    Photon_thresholded < threshold) = 0;
+
+%% ============================================================
+% DISPLAY RAW IMAGE
+% ============================================================
+
+figure
+
+imagesc(rot90(SPC_raw))
+
+axis image
+axis ij
+colormap(gray)
+colorbar
+
+title('Raw SPC Image')
+
+xlabel('X')
+ylabel('Y')
+
+%% ============================================================
+% DISPLAY CORRECTED IMAGE
+% ============================================================
+
+figure
+
+imagesc(rot90(Photon_thresholded))
+
+axis image
+axis ij
+colormap(gray)
+colorbar
+
+title('Background Corrected SPC Image')
+
+xlabel('X')
+ylabel('Y')
+
+%% ============================================================
+% PSF
+% ============================================================
+
+% IMPORTANT:
+% Replace this with your measured PSF when available.
+
+PSF_sigma = 1.2;
+
+PSF = fspecial( ...
+    'gaussian',[9 9],PSF_sigma);
+
+PSF = PSF ./ sum(PSF(:));
+
+%% ============================================================
+% RICHARDSON-LUCY BASELINE
+% ============================================================
+
+RL_iterations = 10;
+
+RL_image = deconvlucy( ...
+    Photon_thresholded, ...
+    PSF, ...
+    RL_iterations);
+
+%% ============================================================
+% DISPLAY RL
+% ============================================================
+
+figure
+
+imagesc(rot90(RL_image))
+
+axis image
+axis ij
+colormap(gray)
+colorbar
+
+title('Richardson-Lucy Reconstruction')
+
+xlabel('X')
+ylabel('Y')
+
+%% ============================================================
+% POISSON + SMOOTHNESS RECONSTRUCTION
+% ============================================================
+
+%
+% We minimise approximately:
+%
+%       Poisson likelihood
+%              +
+%       lambda * smoothness
+%
+% The Poisson part makes the reconstruction consistent
+% with photon counting statistics.
+%
+% The smoothness term prevents the algorithm from
+% interpreting individual noisy photons as real structure.
+%
+
+lambda = 0.05;
+
+iterations = 100;
+
+%% ============================================================
+% INITIALISE RECONSTRUCTION
+% ============================================================
+
+% Start from the background-corrected photon image.
+
+estimate = max(Photon_thresholded,1e-6);
+
+%% ============================================================
+% MAIN ITERATION
+% ============================================================
+
+for iter = 1:iterations
+
+    %% --------------------------------------------------------
+    % FORWARD MODEL
+    % --------------------------------------------------------
+
+    blurred = imfilter( ...
+        estimate, ...
+        PSF, ...
+        'conv', ...
+        'same');
+
+    blurred = max(blurred,1e-6);
+
+    %% --------------------------------------------------------
+    % POISSON LIKELIHOOD UPDATE
+    % --------------------------------------------------------
+
+    ratio = Photon_thresholded ./ blurred;
+
+    correction = imfilter( ...
+        ratio, ...
+        rot90(PSF,2), ...
+        'conv', ...
+        'same');
+
+    poissonEstimate = estimate .* correction;
+
+    %% --------------------------------------------------------
+    % SMOOTHNESS TERM
+    % --------------------------------------------------------
+
+    % Calculate Laplacian
+
+    laplacian = del2(poissonEstimate);
+
+    %% --------------------------------------------------------
+    % REGULARISED UPDATE
+    % --------------------------------------------------------
+
+    estimate = poissonEstimate + ...
+               lambda * laplacian;
+
+    %% --------------------------------------------------------
+    % POSITIVITY CONSTRAINT
+    % --------------------------------------------------------
+
+    estimate(estimate < 0) = 0;
+
+    %% --------------------------------------------------------
+    % NORMALISE TOTAL PHOTON ENERGY
+    % --------------------------------------------------------
+
+    measuredTotal = sum(Photon_thresholded(:));
+
+    estimatedTotal = sum(estimate(:));
+
+    if estimatedTotal > 0
+
+        estimate = estimate * ...
+            (measuredTotal / estimatedTotal);
+
+    end
+
+    %% --------------------------------------------------------
+    % DISPLAY PROGRESS
+    % --------------------------------------------------------
+
+    if mod(iter,10) == 0
+
+        fprintf('Iteration %d / %d\n', ...
+            iter,iterations);
+
+    end
+
+end
+
+%% ============================================================
+% FINAL REGULARISED IMAGE
+% ============================================================
+
+Regularised_image = estimate;
+
+%% ============================================================
+% DISPLAY REGULARISED RECONSTRUCTION
+% ============================================================
+
+figure
+
+imagesc(rot90(Regularised_image))
+
+axis image
+axis ij
+colormap(gray)
+colorbar
+
+title('Poisson + Smoothness Reconstruction')
+
+xlabel('X')
+ylabel('Y')
+
+%% ============================================================
+% COMPARE ALL THREE
+% ============================================================
+
+figure
+
+subplot(1,3,1)
+
+imagesc(rot90(Photon_thresholded))
+
+axis image
+axis ij
+colormap(gray)
+colorbar
+
+title('Corrected')
+
+subplot(1,3,2)
+
+imagesc(rot90(RL_image))
+
+axis image
+axis ij
+colormap(gray)
+colorbar
+
+title('Richardson-Lucy')
+
+subplot(1,3,3)
+
+imagesc(rot90(Regularised_image))
+
+axis image
+axis ij
+colormap(gray)
+colorbar
+
+title('Poisson + Smoothness')
+
+%% ============================================================
+% IMAGE STATISTICS
+% ============================================================
+
+fprintf('\n')
+fprintf('====================================================\n')
+fprintf('RECONSTRUCTION RESULTS\n')
+fprintf('====================================================\n')
+
+fprintf('Total measured photons: %.0f\n', ...
+    sum(Photon_thresholded(:)));
+
+fprintf('RL maximum: %.2f\n', ...
+    max(RL_image(:)));
+
+fprintf('Regularised maximum: %.2f\n', ...
+    max(Regularised_image(:)));
+
+fprintf('====================================================\n')
