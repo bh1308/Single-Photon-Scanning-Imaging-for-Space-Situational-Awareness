@@ -1,0 +1,353 @@
+%% ============================================================
+% TASK 10
+% CORRELATION OF TWO SINGLE PHOTON CAMERA FRAMES
+%
+% Reconstruct two photon-count images from CSV files,
+% register them and average them to improve image quality.
+% ============================================================
+
+clear;
+clc;
+close all;
+
+%% ============================================================
+% SELECT TWO CSV FILES
+% ============================================================
+
+folder = '\\userfs\bh1308\w2k\Desktop\Single Photon Camera\CSV\';
+
+[file1,path] = uigetfile(fullfile(folder,'*.csv'),...
+    'Select First Photon Scan');
+
+[file2,~] = uigetfile(fullfile(folder,'*.csv'),...
+    'Select Second Photon Scan');
+
+if isequal(file1,0) || isequal(file2,0)
+    error('Two CSV files must be selected.');
+end
+
+%% ============================================================
+% ============================================================
+% FRAME 1
+% ============================================================
+% ============================================================
+
+%% READ CSV
+
+data = readtable(fullfile(path,file1));
+
+%% EXTRACT DATA
+
+mirrorX = data.X;
+mirrorY = data.Y;
+Counts = data.Count;
+
+%% SCAN PARAMETERS
+
+Nx = 50;
+Ny = 50;
+
+%% CONVERT MIRROR POSITIONS TO PIXELS
+
+x_grid = linspace(min(mirrorX),max(mirrorX),Nx);
+y_grid = linspace(min(mirrorY),max(mirrorY),Ny);
+
+SPC_frame = zeros(Ny,Nx);
+
+for k = 1:length(Counts)
+
+    [~,x_index] = min(abs(x_grid-mirrorX(k)));
+    [~,y_index] = min(abs(y_grid-mirrorY(k)));
+
+    SPC_frame(y_index,x_index) = Counts(k);
+
+end
+
+SPC_frame = rot90(SPC_frame);
+
+%% DISPLAY RAW FRAME
+
+figure
+
+imagesc(SPC_frame)
+
+axis image
+axis ij
+
+colormap(gray)
+colorbar
+
+title('Frame 1 Raw SPC Image')
+
+%% DARK COUNT CORRECTION
+
+INTEGRATION_TIME = 0.1;
+DARK_COUNT_RATE = 250;
+
+Dark_counts = DARK_COUNT_RATE*INTEGRATION_TIME;
+
+SPC_corrected = SPC_frame-Dark_counts;
+
+SPC_corrected(SPC_corrected<0)=0;
+
+%% BACKGROUND CORRECTION
+
+background = median(SPC_corrected(:));
+
+Photon_image = SPC_corrected-background;
+
+Photon_image(Photon_image<0)=0;
+
+%% PSF
+
+PSF_SIGMA = 1.2;
+
+PSF = fspecial('gaussian',[7 7],PSF_SIGMA);
+
+Photon_image = edgetaper(Photon_image,PSF);
+
+%% RICHARDSON-LUCY
+
+iterations = 20;
+
+RL_image = deconvlucy(Photon_image,PSF,iterations);
+
+RL_image1 = RL_image;
+
+%% DISPLAY FRAME 1
+
+figure
+
+imagesc(RL_image1)
+
+axis image
+axis ij
+
+colormap(gray)
+colorbar
+
+title('Frame 1 Richardson-Lucy Reconstruction')
+
+%% ============================================================
+% ============================================================
+% FRAME 2
+% ============================================================
+% ============================================================
+
+%% READ CSV
+
+data = readtable(fullfile(path,file2));
+
+%% EXTRACT DATA
+
+mirrorX = data.X;
+mirrorY = data.Y;
+Counts = data.Count;
+
+%% SCAN PARAMETERS
+
+Nx = 50;
+Ny = 50;
+
+%% CONVERT MIRROR POSITIONS TO PIXELS
+
+x_grid = linspace(min(mirrorX),max(mirrorX),Nx);
+y_grid = linspace(min(mirrorY),max(mirrorY),Ny);
+
+SPC_frame = zeros(Ny,Nx);
+
+for k = 1:length(Counts)
+
+    [~,x_index] = min(abs(x_grid-mirrorX(k)));
+    [~,y_index] = min(abs(y_grid-mirrorY(k)));
+
+    SPC_frame(y_index,x_index) = Counts(k);
+
+end
+
+SPC_frame = rot90(SPC_frame);
+
+%% DISPLAY RAW FRAME
+
+figure
+
+imagesc(SPC_frame)
+
+axis image
+axis ij
+
+colormap(gray)
+colorbar
+
+title('Frame 2 Raw SPC Image')
+
+%% DARK COUNT CORRECTION
+
+INTEGRATION_TIME = 0.1;
+DARK_COUNT_RATE = 250;
+
+Dark_counts = DARK_COUNT_RATE*INTEGRATION_TIME;
+
+SPC_corrected = SPC_frame-Dark_counts;
+
+SPC_corrected(SPC_corrected<0)=0;
+
+%% BACKGROUND CORRECTION
+
+background = median(SPC_corrected(:));
+
+Photon_image = SPC_corrected-background;
+
+Photon_image(Photon_image<0)=0;
+
+%% PSF
+
+PSF_SIGMA = 1.2;
+
+PSF = fspecial('gaussian',[7 7],PSF_SIGMA);
+
+Photon_image = edgetaper(Photon_image,PSF);
+
+%% RICHARDSON-LUCY
+
+iterations = 20;
+
+RL_image = deconvlucy(Photon_image,PSF,iterations);
+
+RL_image2 = RL_image;
+
+%% DISPLAY FRAME 2
+
+figure
+
+imagesc(RL_image2)
+
+axis image
+axis ij
+
+colormap(gray)
+colorbar
+
+title('Frame 2 Richardson-Lucy Reconstruction')
+
+%% ============================================================
+% REGISTER FRAME 2 TO FRAME 1
+% ============================================================
+
+disp('Registering images...')
+
+% Estimate translation between the two reconstructed images
+tform = imregcorr(RL_image2, RL_image1, 'translation');
+
+% Apply transformation
+RL_registered = imwarp(RL_image2,...
+    tform,...
+    'OutputView',imref2d(size(RL_image1)));
+
+%% ============================================================
+% CORRELATE / COMBINE BOTH FRAMES
+% ============================================================
+
+Combined = (RL_image1 + RL_registered) / 2;
+
+%% ============================================================
+% DIFFERENCE IMAGE
+% ============================================================
+
+Difference = abs(RL_image1 - RL_registered);
+
+%% ============================================================
+% DISPLAY RESULTS
+% ============================================================
+
+figure('Name','Frame Correlation Results','Color','w')
+
+subplot(2,2,1)
+
+imagesc(RL_image1)
+axis image
+axis ij
+colormap(gray)
+colorbar
+title('Frame 1')
+
+subplot(2,2,2)
+
+imagesc(RL_registered)
+axis image
+axis ij
+colormap(gray)
+colorbar
+title('Frame 2 (Registered)')
+
+subplot(2,2,3)
+
+imagesc(Combined)
+axis image
+axis ij
+colormap(gray)
+colorbar
+title('Combined Correlated Image')
+
+subplot(2,2,4)
+
+imagesc(Difference)
+axis image
+axis ij
+colormap(gray)
+colorbar
+title('Difference Image')
+
+%% ============================================================
+% OPTIONAL CONTRAST ENHANCEMENT
+% ============================================================
+
+figure('Name','Contrast Enhanced Comparison','Color','w')
+
+subplot(1,3,1)
+
+imagesc(imadjust(mat2gray(RL_image1)))
+axis image
+axis ij
+colormap(gray)
+colorbar
+title('Frame 1')
+
+subplot(1,3,2)
+
+imagesc(imadjust(mat2gray(RL_registered)))
+axis image
+axis ij
+colormap(gray)
+colorbar
+title('Frame 2')
+
+subplot(1,3,3)
+
+imagesc(imadjust(mat2gray(Combined)))
+axis image
+axis ij
+colormap(gray)
+colorbar
+title('Combined')
+
+%% ============================================================
+% CALCULATE IMPROVEMENT
+% ============================================================
+
+noise1 = std(RL_image1(:));
+noiseCombined = std(Combined(:));
+
+fprintf('\n');
+fprintf('=============================================\n');
+fprintf('Frame Correlation Results\n');
+fprintf('=============================================\n');
+fprintf('Frame 1 Standard Deviation : %.3f\n',noise1);
+fprintf('Combined Standard Deviation: %.3f\n',noiseCombined);
+
+if noiseCombined < noise1
+    fprintf('Noise reduced after combining frames.\n');
+else
+    fprintf('No significant noise reduction detected.\n');
+end
+fprintf('=============================================\n');
