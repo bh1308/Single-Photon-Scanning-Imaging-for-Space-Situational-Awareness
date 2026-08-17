@@ -1,0 +1,528 @@
+clc
+clear
+close all
+
+%% ============================================================
+% TASK 9 - SPC DATA ANALYSIS
+% Recreate Star Map from SPC Frame and Find Algorithm Limits
+%
+% Each sampling element represents the 4.2 um fibre diameter.
+% =============================================================
+
+
+%% ============================================================
+% 1. PHYSICAL SYSTEM PARAMETERS
+% =============================================================
+
+FIBRE_DIAMETER = 4.2e-6;      % Fibre diameter [m]
+FOCAL_LENGTH = 6.459;         % Telescope focal length [m]
+
+% Angular sampling represented by one fibre position
+angularSampling = FIBRE_DIAMETER / FOCAL_LENGTH;
+
+% Convert radians to arcseconds
+angularSamplingArcsec = ...
+    angularSampling * (180/pi) * 3600;
+
+fprintf('\n============================================\n');
+fprintf('PHYSICAL SYSTEM PARAMETERS\n');
+fprintf('============================================\n');
+
+fprintf('Fibre diameter       = %.1f um\n', ...
+    FIBRE_DIAMETER*1e6);
+
+fprintf('Telescope focal length = %.3f m\n', ...
+    FOCAL_LENGTH);
+
+fprintf('Angular sampling     = %.4f arcsec\n', ...
+    angularSamplingArcsec);
+
+
+%% ============================================================
+% 2. IMAGE / FIBRE SAMPLING GRID
+% =============================================================
+
+% Each image element represents one 4.2 um fibre sampling position
+
+STAR_WIDTH = 100;
+STAR_HEIGHT = 100;
+
+starMap = zeros(STAR_HEIGHT, STAR_WIDTH);
+
+
+%% ============================================================
+% 3. STAR POSITIONS AND BRIGHTNESS
+% =============================================================
+
+% [X position, Y position, Brightness]
+
+stars = [
+    20, 30, 10000;
+    45, 35, 20000;
+    70, 50, 15000;
+    80, 75, 25000;
+    35, 80, 18000;
+    60, 90, 12000
+];
+
+
+%% ============================================================
+% 4. CREATE IDEAL STAR MAP
+% =============================================================
+
+for n = 1:size(stars,1)
+
+    x = stars(n,1);
+    y = stars(n,2);
+    brightness = stars(n,3);
+
+    starMap(y,x) = brightness;
+
+end
+
+
+%% ============================================================
+% 5. GENERATE GAUSSIAN STAR PSFs
+% =============================================================
+
+PSF_SIGMA = 1.2;
+
+gaussianStarMap = zeros(STAR_HEIGHT, STAR_WIDTH);
+
+for n = 1:size(stars,1)
+
+    x0 = stars(n,1);
+    y0 = stars(n,2);
+    brightness = stars(n,3);
+
+    radius = ceil(4 * PSF_SIGMA);
+
+    xmin = max(1, x0-radius);
+    xmax = min(STAR_WIDTH, x0+radius);
+
+    ymin = max(1, y0-radius);
+    ymax = min(STAR_HEIGHT, y0+radius);
+
+    [X,Y] = meshgrid(xmin:xmax, ymin:ymax);
+
+    PSF = brightness .* ...
+        exp(-((X-x0).^2 + (Y-y0).^2) ...
+        /(2*PSF_SIGMA^2));
+
+    gaussianStarMap(ymin:ymax, xmin:xmax) = ...
+        gaussianStarMap(ymin:ymax, xmin:xmax) + PSF;
+
+end
+
+
+%% ============================================================
+% 6. DISPLAY ORIGINAL STAR MAP
+% =============================================================
+
+figure;
+
+imagesc(gaussianStarMap);
+
+axis image;
+set(gca,'YDir','normal');
+colormap(gray);
+colorbar;
+
+xlabel('Fibre Sampling Position X');
+ylabel('Fibre Sampling Position Y');
+
+title('Original Star Map');
+
+
+%% ============================================================
+% 7. GENERATE IDEAL SPC FRAME
+% ============================================================
+
+% Each position represents one 4.2 um fibre sampling element.
+%
+% Therefore, there is NO arbitrary 8-pixel FOV here.
+%
+% One scan position = one detector measurement.
+
+Nx = STAR_WIDTH;
+Ny = STAR_HEIGHT;
+
+SPC_frame_ideal = zeros(Ny,Nx);
+
+for y = 1:Ny
+
+    for x = 1:Nx
+
+        % One fibre sampling element
+        SPC_frame_ideal(y,x) = gaussianStarMap(y,x);
+
+    end
+
+end
+
+
+%% ============================================================
+% 8. IDEAL RECONSTRUCTION
+% =============================================================
+
+% Each photon measurement corresponds directly
+% to one fibre sampling position.
+
+reconstructedIdeal = SPC_frame_ideal;
+
+
+%% ============================================================
+% 9. DISPLAY IDEAL RECONSTRUCTION
+% =============================================================
+
+figure;
+
+subplot(1,2,1);
+
+imagesc(gaussianStarMap);
+
+axis image;
+set(gca,'YDir','normal');
+colormap(gray);
+colorbar;
+
+xlabel('Fibre Position X');
+ylabel('Fibre Position Y');
+
+title('Original Star Map');
+
+
+subplot(1,2,2);
+
+imagesc(reconstructedIdeal);
+
+axis image;
+set(gca,'YDir','normal');
+colormap(gray);
+colorbar;
+
+xlabel('Fibre Position X');
+ylabel('Fibre Position Y');
+
+title('Ideal SPC Reconstruction');
+
+
+%% ============================================================
+% 10. SIMULATE PHOTON COUNTING
+% =============================================================
+
+% Scaling factor converts simulated signal into
+% expected photon counts.
+
+signalScale = 0.10;
+
+expectedCounts = ...
+    SPC_frame_ideal .* signalScale;
+
+
+% Photon counting follows Poisson statistics
+
+photonCounts = poissrnd(expectedCounts);
+
+
+%% ============================================================
+% 11. ADD BACKGROUND / AMBIENT COUNTS
+% =============================================================
+
+backgroundCount = 101;
+
+expectedMeasuredCounts = ...
+    expectedCounts + backgroundCount;
+
+
+% Detector measurements including background
+
+measuredCounts = ...
+    poissrnd(expectedMeasuredCounts);
+
+
+%% ============================================================
+% 12. BACKGROUND SUBTRACTION
+% =============================================================
+
+correctedCounts = ...
+    measuredCounts - backgroundCount;
+
+
+% Prevent negative photon counts
+
+correctedCounts(correctedCounts < 0) = 0;
+
+
+%% ============================================================
+% 13. RECONSTRUCT IMAGE FROM MEASURED COUNTS
+% =============================================================
+
+reconstructedNoisy = correctedCounts;
+
+
+%% ============================================================
+% 14. DISPLAY NOISY RECONSTRUCTION
+% =============================================================
+
+figure;
+
+imagesc(reconstructedNoisy);
+
+axis image;
+set(gca,'YDir','normal');
+colormap(gray);
+colorbar;
+
+xlabel('Fibre Sampling Position X');
+ylabel('Fibre Sampling Position Y');
+
+title('SPC Reconstruction with Photon Noise');
+
+
+%% ============================================================
+% 15. COMPARE ORIGINAL AND NOISY RECONSTRUCTION
+% =============================================================
+
+figure;
+
+subplot(1,2,1);
+
+imagesc(gaussianStarMap);
+
+axis image;
+set(gca,'YDir','normal');
+colormap(gray);
+colorbar;
+
+xlabel('Fibre Position X');
+ylabel('Fibre Position Y');
+
+title('Original Star Map');
+
+
+subplot(1,2,2);
+
+imagesc(reconstructedNoisy);
+
+axis image;
+set(gca,'YDir','normal');
+colormap(gray);
+colorbar;
+
+xlabel('Fibre Position X');
+ylabel('Fibre Position Y');
+
+title('Noisy SPC Reconstruction');
+
+
+%% ============================================================
+% 16. RECONSTRUCTION QUALITY
+% =============================================================
+
+% Normalise original image
+
+originalNorm = ...
+    gaussianStarMap ./ max(gaussianStarMap(:));
+
+
+% Normalise reconstructed image
+
+reconstructedNorm = ...
+    reconstructedNoisy ./ max(reconstructedNoisy(:));
+
+
+% Mean Squared Error
+
+MSE = mean( ...
+    (originalNorm(:) - reconstructedNorm(:)).^2);
+
+
+% Correlation coefficient
+
+correlation = corr( ...
+    originalNorm(:), ...
+    reconstructedNorm(:));
+
+
+fprintf('\n============================================\n');
+fprintf('RECONSTRUCTION RESULTS\n');
+fprintf('============================================\n');
+
+fprintf('Background count = %.1f\n', ...
+    backgroundCount);
+
+fprintf('Signal scale     = %.3f\n', ...
+    signalScale);
+
+fprintf('MSE              = %.5f\n', ...
+    MSE);
+
+fprintf('Correlation      = %.4f\n', ...
+    correlation);
+
+
+%% ============================================================
+% 17. TEST DIFFERENT SIGNAL LEVELS
+% =============================================================
+
+signalLevels = ...
+    [1.0 0.5 0.2 0.1 0.05 0.02 0.01];
+
+MSE_signal = ...
+    zeros(size(signalLevels));
+
+Correlation_signal = ...
+    zeros(size(signalLevels));
+
+
+for n = 1:length(signalLevels)
+
+    expected = ...
+        SPC_frame_ideal .* signalLevels(n);
+
+    noisy = ...
+        poissrnd(expected);
+
+
+    % Normalise
+
+    noisyNorm = ...
+        noisy ./ max(noisy(:));
+
+
+    % MSE
+
+    MSE_signal(n) = ...
+        mean((originalNorm(:) - noisyNorm(:)).^2);
+
+
+    % Correlation
+
+    Correlation_signal(n) = ...
+        corr(originalNorm(:), noisyNorm(:));
+
+end
+
+
+%% ============================================================
+% 18. PLOT SIGNAL LIMIT
+% =============================================================
+
+figure;
+
+plot(signalLevels, ...
+    Correlation_signal, '-o');
+
+set(gca,'XScale','log');
+
+xlabel('Signal Scale');
+
+ylabel('Correlation');
+
+title('Reconstruction Quality vs Signal Level');
+
+grid on;
+
+
+%% ============================================================
+% 19. TEST DIFFERENT BACKGROUND LEVELS
+% =============================================================
+
+backgroundLevels = ...
+    [0 1 5 10 20 50 100 200];
+
+MSE_background = ...
+    zeros(size(backgroundLevels));
+
+Correlation_background = ...
+    zeros(size(backgroundLevels));
+
+
+for n = 1:length(backgroundLevels)
+
+    background = ...
+        backgroundLevels(n);
+
+
+    expected = ...
+        SPC_frame_ideal .* signalScale ...
+        + background;
+
+
+    noisy = ...
+        poissrnd(expected);
+
+
+    % Background subtraction
+
+    corrected = ...
+        noisy - background;
+
+
+    corrected(corrected < 0) = 0;
+
+
+    % Normalise
+
+    correctedNorm = ...
+        corrected ./ max(corrected(:));
+
+
+    % MSE
+
+    MSE_background(n) = ...
+        mean((originalNorm(:) - correctedNorm(:)).^2);
+
+
+    % Correlation
+
+    Correlation_background(n) = ...
+        corr(originalNorm(:), correctedNorm(:));
+
+end
+
+
+%% ============================================================
+% 20. PLOT BACKGROUND LIMIT
+% =============================================================
+
+figure;
+
+plot(backgroundLevels, ...
+    Correlation_background, '-o');
+
+xlabel('Background Counts');
+
+ylabel('Correlation');
+
+title('Reconstruction Quality vs Background');
+
+grid on;
+
+
+%% ============================================================
+% 21. SUMMARY
+% =============================================================
+
+fprintf('\n============================================\n');
+fprintf('TASK 9 COMPLETE\n');
+fprintf('============================================\n');
+
+fprintf('Fibre sampling element = %.1f um\n', ...
+    FIBRE_DIAMETER*1e6);
+
+fprintf('Angular sampling        = %.4f arcsec\n', ...
+    angularSamplingArcsec);
+
+fprintf('\nTests performed:\n');
+
+fprintf('- Ideal star reconstruction\n');
+fprintf('- Poisson photon noise\n');
+fprintf('- Reduced signal levels\n');
+fprintf('- Background / ambient counts\n');
+fprintf('- Background subtraction\n');
+fprintf('- Reconstruction quality analysis\n');
+
+fprintf('\nUse the correlation plots to identify\n');
+fprintf('where reconstruction quality begins to fail.\n');
