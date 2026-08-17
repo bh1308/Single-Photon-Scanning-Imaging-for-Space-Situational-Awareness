@@ -1,0 +1,28 @@
+M = 32;
+refSym = (0:M-1)';
+refC = qammod(refSym,M,UnitAveragePower=true);
+
+sel = [1 5 7 10 16 18 22 24 27 29 31 ]; % choosing arbitrarily: 
+
+figure; scatterplot(refC,1,0,'k.'); hold on
+plot(real(refC(sel)), imag(refC(sel)), 'y*', 'MarkerSize',15);
+for k = 1:numel(sel)
+    i = sel(k);
+    text(real(refC(i))+0.04, imag(refC(i))-0.04, num2str(refSym(i)), Color=[1 1 0]);
+end
+title('Illuminated Pixels')  
+axis equal
+axis([-1.5 1.5 -1.5 1.5])
+hold off
+
+qammod(0,M,UnitAveragePower=true,PlotConstellation=true);
+refSym = (0:M-1)';
+refC = qammod(refSym,M,UnitAveragePower=true);
+cd = comm.ConstellationDiagram(ReferenceConstellation=refC);
+cd(refC)
+scatterplot(refC,1,0,'r*');
+for k = 1:M
+    text(real(refC(k))+0.04,imag(refC(k))-0.04, ...
+        num2str(refSym(k)),Color='r');
+end
+axis([-1.5 1.5 -1.5 1.5])
