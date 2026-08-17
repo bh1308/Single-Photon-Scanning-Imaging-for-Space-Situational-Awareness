@@ -1,0 +1,346 @@
+%% ============================================================
+% TASK 5 - SINGLE-PHOTON SCANNING CAMERA
+%
+% LAB DATA ACQUISITION VERSION
+%
+% Optical system:
+%
+% Illuminated object
+%       ↓
+% Telescope / lens
+%       ↓
+% Beam-steering mirror
+%       ↓
+% Single-mode fibre
+%       ↓
+% SPCM-AQRH
+%       ↓
+% Photon count
+%       ↓
+% MATLAB
+%       ↓
+% Reconstructed SPC image
+%
+% The beam-steering mirror performs a 50 x 50 raster scan.
+%
+% IMPORTANT:
+% The section marked "SPCM DATA INPUT" is where the actual
+% photon-count acquisition must be connected.
+%
+% ============================================================
+
+clear;
+clc;
+close all;
+
+
+%% ============================================================
+% 1. MIRROR COMMUNICATION
+% ============================================================
+
+port = "COM4";                 % CHANGE IF REQUIRED
+baud = 256000;
+
+mirror = serialport(port, baud);
+
+configureTerminator(mirror, "CR/LF");
+
+pause(0.1);
+
+
+%% ============================================================
+% 2. MIRROR HANDSHAKE
+% ============================================================
+
+writeline(mirror, "start");
+
+pause(0.01);
+
+
+%% ============================================================
+% 3. MIRROR MOVEMENT FUNCTION
+% ============================================================
+
+function moveMirror(mirror,x,y)
+
+    % Maximum allowed mirror deflection
+
+    maxDef = tand(16.6) / tand(50);
+
+
+    % Limit requested position
+
+    x = max(min(x, maxDef), -maxDef);
+    y = max(min(y, maxDef), -maxDef);
+
+
+    % Create mirror command
+
+    cmd = sprintf("xy= %0.4f; %0.4f", x, y);
+
+
+    % Send command to physical mirror
+
+    writeline(mirror, cmd);
+
+
+    % Allow mirror to settle
+
+    pause(0.05);
+
+end
+
+
+%% ============================================================
+% 4. MIRROR SCAN PARAMETERS
+% ============================================================
+
+Nx = 50;
+Ny = 50;
+
+
+% Maximum mirror deflection
+
+maxDef = tand(16.6) / tand(50);
+
+
+% Generate equally spaced mirror positions
+
+xs = linspace(-maxDef, maxDef, Nx);
+ys = linspace(-maxDef, maxDef, Ny);
+
+
+% Create 2D scan grid
+
+[Xgrid, Ygrid] = meshgrid(xs, ys);
+
+
+% Convert scan grid into sequential positions
+
+scanX = Xgrid(:);
+scanY = Ygrid(:);
+
+
+% Total number of measurements
+
+numMeasurements = length(scanX);
+
+
+fprintf('\n');
+fprintf('============================================\n');
+fprintf('SPC LAB DATA ACQUISITION\n');
+fprintf('============================================\n');
+
+fprintf('Scan size: %d x %d\n', Nx, Ny);
+
+fprintf('Total measurements: %d\n', ...
+    numMeasurements);
+
+
+%% ============================================================
+% 5. CREATE DATA STORAGE
+% ============================================================
+
+% One detector measurement for every mirror position
+
+photonCounts = zeros(numMeasurements,1);
+
+
+% Reconstructed SPC image
+
+SPC_frame = zeros(Ny,Nx);
+
+
+%% ============================================================
+% 6. SPCM DATA ACQUISITION SETTINGS
+% ============================================================
+
+% ------------------------------------------------------------
+% IMPORTANT:
+%
+% These values are placeholders until the SPCM-AQRH
+% acquisition method is confirmed.
+% ------------------------------------------------------------
+
+INTEGRATION_TIME = 0.1;        % seconds
+
+
+%% ============================================================
+% 7. PERFORM MIRROR SCAN
+% ============================================================
+
+fprintf('\n');
+fprintf('Starting mirror scan...\n');
+fprintf('\n');
+
+
+for k = 1:numMeasurements
+
+
+    %% --------------------------------------------------------
+    % CURRENT MIRROR POSITION
+    % ---------------------------------------------------------
+
+    currentX = scanX(k);
+    currentY = scanY(k);
+
+
+    %% --------------------------------------------------------
+    % MOVE PHYSICAL MIRROR
+    % ---------------------------------------------------------
+
+    moveMirror(mirror,currentX,currentY);
+
+
+    %% --------------------------------------------------------
+    % WAIT FOR MIRROR TO SETTLE
+    % ---------------------------------------------------------
+
+    pause(0.05);
+
+
+    %% --------------------------------------------------------
+    % SPCM DATA INPUT
+    %
+    % ========================================================
+    %
+    % THIS IS THE PLACEHOLDER FOR THE REAL SPCM-AQRH
+    % PHOTON COUNT.
+    %
+    % Replace the line below with the command that reads
+    % the actual detector count.
+    %
+    % Example concept:
+    %
+    % photonCount = READ_SPCM(INTEGRATION_TIME);
+    %
+    % The exact command depends on how the SPCM-AQRH
+    % is connected to MATLAB.
+    %
+    % ========================================================
+
+    photonCount = NaN;
+
+
+    %% --------------------------------------------------------
+    % STORE RAW DETECTOR MEASUREMENT
+    % ---------------------------------------------------------
+
+    photonCounts(k) = photonCount;
+
+
+    %% --------------------------------------------------------
+    % CONVERT SCAN INDEX INTO IMAGE COORDINATES
+    % ---------------------------------------------------------
+
+    ix = mod(k-1,Nx) + 1;
+
+    iy = floor((k-1)/Nx) + 1;
+
+
+    %% --------------------------------------------------------
+    % STORE DETECTOR COUNT AS IMAGE PIXEL
+    % ---------------------------------------------------------
+
+    SPC_frame(iy,ix) = photonCounts(k);
+
+
+    %% --------------------------------------------------------
+    % DISPLAY SCAN PROGRESS
+    % ---------------------------------------------------------
+
+    fprintf('Scan %4d / %4d   X = %+.4f   Y = %+.4f\n', ...
+        k, numMeasurements, currentX, currentY);
+
+end
+
+
+%% ============================================================
+% 8. RETURN MIRROR TO CENTRE
+% ============================================================
+
+moveMirror(mirror,0,0);
+
+
+%% ============================================================
+% 9. CLOSE MIRROR CONNECTION
+% ============================================================
+
+clear mirror;
+
+
+%% ============================================================
+% 10. DISPLAY RECONSTRUCTED SPC IMAGE
+% ============================================================
+
+figure;
+
+imagesc(SPC_frame);
+
+axis image;
+
+set(gca,'YDir','normal');
+
+colormap(gray);
+
+colorbar;
+
+xlabel('Mirror Scan X');
+
+ylabel('Mirror Scan Y');
+
+title('SPC Reconstructed Image');
+
+
+%% ============================================================
+% 11. DISPLAY RAW PHOTON COUNTS
+% ============================================================
+
+figure;
+
+plot(photonCounts);
+
+xlabel('Mirror Scan Index');
+
+ylabel('Photon Count');
+
+title('SPCM Photon Counts vs Mirror Scan Index');
+
+grid on;
+
+
+%% ============================================================
+% 12. DISPLAY BASIC INFORMATION
+% ============================================================
+
+fprintf('\n');
+fprintf('============================================\n');
+fprintf('SCAN COMPLETE\n');
+fprintf('============================================\n');
+
+fprintf('Mirror scan size: %d x %d\n',Nx,Ny);
+
+fprintf('Total measurements: %d\n', ...
+    numMeasurements);
+
+fprintf('Integration time: %.3f seconds\n', ...
+    INTEGRATION_TIME);
+
+fprintf('============================================\n');
+
+
+%% ============================================================
+% 13. SAVE RAW DATA
+% ============================================================
+
+save('SPC_lab_scan.mat', ...
+     'photonCounts', ...
+     'SPC_frame', ...
+     'scanX', ...
+     'scanY', ...
+     'Nx', ...
+     'Ny', ...
+     'INTEGRATION_TIME');
+
+fprintf('\nRaw scan data saved to SPC_lab_scan.mat\n');
+
