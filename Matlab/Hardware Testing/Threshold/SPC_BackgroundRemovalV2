@@ -1,0 +1,1211 @@
+%% ============================================================
+% SINGLE PHOTON CAMERA REAL DATA RECONSTRUCTION
+%
+% BACKGROUND CSV
+%       |
+%       +--> Automatic Background Grid Detection
+%       +--> Background Image
+%       +--> Background Statistics
+%
+% REAL SCAN CSV
+%       |
+%       +--> FIXED 41 x 41 GRID
+%       +--> Raw Image
+%
+% BACKGROUND
+%       |
+%       +--> 2D Interpolation onto REAL SCAN GRID
+%
+% REAL SCAN - BACKGROUND
+%       |
+%       +--> Background Corrected Image
+%       |
+%       +--> 3-SIGMA STATISTICAL SOURCE DETECTION
+%       |
+%       +--> Source Centroid Detection
+%       |
+%       +--> Measured Scan Perimeter
+%       |
+%       +--> 2D Surrounding-Point Interpolation
+%
+% OUTPUTS:
+%
+% 1. Measured Background Image
+% 2. Raw SPC Image
+% 3. Background Interpolated onto Real Scan Grid
+% 4. Background Corrected Image
+% 5. Statistical Detection Threshold
+% 6. Detected Source Image
+% 7. Source Centroids
+% 8. Interpolated + Background Corrected Image
+%
+% REAL SCAN GRID:
+%       41 x 41
+%
+% STATISTICAL DETECTION:
+%
+%       Threshold = Background + 3*Background_SD
+%
+% A source is detected when:
+%
+%       Measured Count > Background + 3*SD
+%
+% ============================================================
+
+clear; clc; close all
+
+%% ============================================================
+% FOLDER
+% ============================================================
+
+folder = '\\userfs\bh1308\w2k\Desktop\Single Photon Camera\CSV\Testing';
+
+%% ============================================================
+% SELECT BACKGROUND CSV
+% ============================================================
+
+backgroundFilename = uigetfile( ...
+    fullfile(folder,'*.csv'), ...
+    'Select BACKGROUND CSV file');
+
+if isequal(backgroundFilename,0)
+
+    disp('No background file selected.');
+    return
+
+end
+
+backgroundData = readtable( ...
+    fullfile(folder,backgroundFilename));
+
+%% ============================================================
+% SELECT REAL SCAN CSV
+% ============================================================
+
+scanFilename = uigetfile( ...
+    fullfile(folder,'*.csv'), ...
+    'Select REAL SCAN CSV file');
+
+if isequal(scanFilename,0)
+
+    disp('No real scan file selected.');
+    return
+
+end
+
+scanData = readtable( ...
+    fullfile(folder,scanFilename));
+
+%% ============================================================
+% EXTRACT BACKGROUND DATA
+% ============================================================
+
+backgroundX = backgroundData.X;
+backgroundY = backgroundData.Y;
+backgroundCounts = backgroundData.Count;
+
+% Remove invalid rows
+
+validBackground = ...
+    isfinite(backgroundX) & ...
+    isfinite(backgroundY) & ...
+    isfinite(backgroundCounts);
+
+backgroundX = backgroundX(validBackground);
+backgroundY = backgroundY(validBackground);
+backgroundCounts = backgroundCounts(validBackground);
+
+%% ============================================================
+% EXTRACT REAL SCAN DATA
+% ============================================================
+
+mirrorX = scanData.X;
+mirrorY = scanData.Y;
+Counts = scanData.Count;
+
+% Remove invalid rows
+
+validScan = ...
+    isfinite(mirrorX) & ...
+    isfinite(mirrorY) & ...
+    isfinite(Counts);
+
+mirrorX = mirrorX(validScan);
+mirrorY = mirrorY(validScan);
+Counts = Counts(validScan);
+
+%% ============================================================
+% ============================================================
+% BACKGROUND GRID DETECTION
+% ============================================================
+% ============================================================
+
+x_sorted_bg = sort(backgroundX);
+y_sorted_bg = sort(backgroundY);
+
+dx_bg = diff(x_sorted_bg);
+dy_bg = diff(y_sorted_bg);
+
+dx_nonzero_bg = ...
+    dx_bg(abs(dx_bg) > 1e-10);
+
+dy_nonzero_bg = ...
+    dy_bg(abs(dy_bg) > 1e-10);
+
+if isempty(dx_nonzero_bg)
+
+    error( ...
+        'Unable to determine BACKGROUND X scan positions.');
+
+end
+
+if isempty(dy_nonzero_bg)
+
+    error( ...
+        'Unable to determine BACKGROUND Y scan positions.');
+
+end
+
+%% ============================================================
+% ESTIMATE BACKGROUND GRID SPACING
+% ============================================================
+
+dx_sorted_bg = sort(dx_nonzero_bg);
+dy_sorted_bg = sort(dy_nonzero_bg);
+
+numX_bg = ...
+    max(1,round(length(dx_sorted_bg)*0.25));
+
+numY_bg = ...
+    max(1,round(length(dy_sorted_bg)*0.25));
+
+estimatedXSpacing_bg = ...
+    median(dx_sorted_bg(1:numX_bg));
+
+estimatedYSpacing_bg = ...
+    median(dy_sorted_bg(1:numY_bg));
+
+%% ============================================================
+% BACKGROUND POSITION TOLERANCE
+% ============================================================
+
+x_tolerance_bg = ...
+    estimatedXSpacing_bg * 0.25;
+
+y_tolerance_bg = ...
+    estimatedYSpacing_bg * 0.25;
+
+%% ============================================================
+% CLUSTER BACKGROUND X POSITIONS
+% ============================================================
+
+x_grid_bg = x_sorted_bg(1);
+
+for k = 2:length(x_sorted_bg)
+
+    if abs( ...
+            x_sorted_bg(k) - x_grid_bg(end)) ...
+            > x_tolerance_bg
+
+        x_grid_bg(end+1) = ...
+            x_sorted_bg(k);
+
+    end
+
+end
+
+%% ============================================================
+% CLUSTER BACKGROUND Y POSITIONS
+% ============================================================
+
+y_grid_bg = y_sorted_bg(1);
+
+for k = 2:length(y_sorted_bg)
+
+    if abs( ...
+            y_sorted_bg(k) - y_grid_bg(end)) ...
+            > y_tolerance_bg
+
+        y_grid_bg(end+1) = ...
+            y_sorted_bg(k);
+
+    end
+
+end
+
+%% ============================================================
+% SORT BACKGROUND GRID
+% ============================================================
+
+x_grid_bg = sort(x_grid_bg);
+y_grid_bg = sort(y_grid_bg);
+
+Nx_bg = length(x_grid_bg);
+Ny_bg = length(y_grid_bg);
+
+%% ============================================================
+% MAP BACKGROUND DATA ONTO GRID
+% ============================================================
+
+SPC_background_counts = ...
+    zeros(Ny_bg,Nx_bg);
+
+SPC_background_visits = ...
+    zeros(Ny_bg,Nx_bg);
+
+for k = 1:length(backgroundCounts)
+
+    [x_error,x_index] = ...
+        min(abs(x_grid_bg - backgroundX(k)));
+
+    [y_error,y_index] = ...
+        min(abs(y_grid_bg - backgroundY(k)));
+
+    if x_error <= x_tolerance_bg && ...
+       y_error <= y_tolerance_bg
+
+        SPC_background_counts( ...
+            y_index,x_index) = ...
+            SPC_background_counts( ...
+            y_index,x_index) + ...
+            backgroundCounts(k);
+
+        SPC_background_visits( ...
+            y_index,x_index) = ...
+            SPC_background_visits( ...
+            y_index,x_index) + 1;
+
+    end
+
+end
+
+%% ============================================================
+% AVERAGE BACKGROUND COUNTS
+% ============================================================
+
+SPC_background = ...
+    zeros(Ny_bg,Nx_bg);
+
+measuredBackgroundMask = ...
+    SPC_background_visits > 0;
+
+SPC_background( ...
+    measuredBackgroundMask) = ...
+    SPC_background_counts( ...
+    measuredBackgroundMask) ./ ...
+    SPC_background_visits( ...
+    measuredBackgroundMask);
+
+%% ============================================================
+% BACKGROUND STATISTICS
+% ============================================================
+
+backgroundValues = ...
+    SPC_background(measuredBackgroundMask);
+
+backgroundMean = ...
+    mean(backgroundValues);
+
+backgroundMedian = ...
+    median(backgroundValues);
+
+backgroundSD = ...
+    std(backgroundValues);
+
+%% ============================================================
+% DISPLAY BACKGROUND IMAGE
+% ============================================================
+
+figure
+
+imagesc(rot90(SPC_background))
+
+axis image
+axis ij
+
+colormap(gray)
+colorbar
+
+title(sprintf( ...
+    'Measured Background (%d x %d)', ...
+    Nx_bg,Ny_bg))
+
+xlabel('Mirror X Position')
+ylabel('Mirror Y Position')
+
+%% ============================================================
+% ============================================================
+% REAL SCAN GRID
+% ============================================================
+% ============================================================
+%
+% FIXED GRID SIZE:
+%
+%       41 x 41
+%
+% The physical minimum and maximum mirror positions are
+% used to create 41 equally spaced X positions and
+% 41 equally spaced Y positions.
+%
+% ============================================================
+
+%% ============================================================
+% FIXED GRID SIZE
+% ============================================================
+
+Nx = 41;
+Ny = 41;
+
+%% ============================================================
+% DETERMINE PHYSICAL SCAN RANGE
+% ============================================================
+
+x_min = min(mirrorX);
+x_max = max(mirrorX);
+
+y_min = min(mirrorY);
+y_max = max(mirrorY);
+
+%% ============================================================
+% CREATE FIXED 41 x 41 GRID
+% ============================================================
+
+x_grid = linspace( ...
+    x_min, ...
+    x_max, ...
+    Nx);
+
+y_grid = linspace( ...
+    y_min, ...
+    y_max, ...
+    Ny);
+
+%% ============================================================
+% CALCULATE GRID SPACING
+% ============================================================
+
+estimatedXSpacing = ...
+    mean(diff(x_grid));
+
+estimatedYSpacing = ...
+    mean(diff(y_grid));
+
+%% ============================================================
+% REAL SCAN POSITION TOLERANCE
+% ============================================================
+
+x_tolerance = ...
+    estimatedXSpacing * 0.5;
+
+y_tolerance = ...
+    estimatedYSpacing * 0.5;
+
+%% ============================================================
+% MAP REAL SCAN DATA ONTO 41 x 41 GRID
+% ============================================================
+
+SPC_counts = ...
+    zeros(Ny,Nx);
+
+SPC_visits = ...
+    zeros(Ny,Nx);
+
+for k = 1:length(Counts)
+
+    [x_error,x_index] = ...
+        min(abs(x_grid - mirrorX(k)));
+
+    [y_error,y_index] = ...
+        min(abs(y_grid - mirrorY(k)));
+
+    if x_error <= x_tolerance && ...
+       y_error <= y_tolerance
+
+        SPC_counts( ...
+            y_index,x_index) = ...
+            SPC_counts( ...
+            y_index,x_index) + Counts(k);
+
+        SPC_visits( ...
+            y_index,x_index) = ...
+            SPC_visits( ...
+            y_index,x_index) + 1;
+
+    end
+
+end
+
+%% ============================================================
+% AVERAGE REAL SCAN COUNTS
+% ============================================================
+
+SPC_frame = ...
+    zeros(Ny,Nx);
+
+measuredMask = ...
+    SPC_visits > 0;
+
+SPC_frame( ...
+    measuredMask) = ...
+    SPC_counts( ...
+    measuredMask) ./ ...
+    SPC_visits( ...
+    measuredMask);
+
+%% ============================================================
+% DISPLAY RAW REAL SCAN
+% ============================================================
+
+figure
+
+imagesc(rot90(SPC_frame))
+
+axis image
+axis ij
+
+colormap(gray)
+colorbar
+
+title(sprintf( ...
+    'Raw SPC Image (%d x %d)', ...
+    Nx,Ny))
+
+xlabel('Mirror X Position')
+ylabel('Mirror Y Position')
+
+%% ============================================================
+% ============================================================
+% SCAN GRID COMPARISON
+% ============================================================
+% ============================================================
+
+fprintf('\n');
+fprintf('============================================\n');
+fprintf(' SCAN GRID COMPARISON\n');
+fprintf('============================================\n');
+
+fprintf('\nBACKGROUND:\n');
+
+fprintf('X points : %d\n',Nx_bg);
+
+fprintf('Y points : %d\n',Ny_bg);
+
+fprintf('X range  : %.10f -> %.10f\n', ...
+    min(x_grid_bg), ...
+    max(x_grid_bg));
+
+fprintf('Y range  : %.10f -> %.10f\n', ...
+    min(y_grid_bg), ...
+    max(y_grid_bg));
+
+fprintf('\nREAL SCAN:\n');
+
+fprintf('X points : %d\n',Nx);
+
+fprintf('Y points : %d\n',Ny);
+
+fprintf('X range  : %.10f -> %.10f\n', ...
+    min(x_grid), ...
+    max(x_grid));
+
+fprintf('Y range  : %.10f -> %.10f\n', ...
+    min(y_grid), ...
+    max(y_grid));
+
+fprintf('\nGRID SPACING:\n');
+
+fprintf('Background X spacing : %.10f\n', ...
+    estimatedXSpacing_bg);
+
+fprintf('Background Y spacing : %.10f\n', ...
+    estimatedYSpacing_bg);
+
+fprintf('Real scan X spacing  : %.10f\n', ...
+    estimatedXSpacing);
+
+fprintf('Real scan Y spacing  : %.10f\n', ...
+    estimatedYSpacing);
+
+fprintf('\n============================================\n');
+
+%% ============================================================
+% ============================================================
+% INTERPOLATE BACKGROUND ONTO REAL SCAN GRID
+% ============================================================
+% ============================================================
+
+%% ============================================================
+% FIND MEASURED BACKGROUND POINTS
+% ============================================================
+
+[row_bg,col_bg] = ...
+    find(measuredBackgroundMask);
+
+%% ============================================================
+% CONVERT BACKGROUND GRID INDICES TO PHYSICAL COORDINATES
+% ============================================================
+
+X_bg_measured = ...
+    x_grid_bg(col_bg(:));
+
+Y_bg_measured = ...
+    y_grid_bg(row_bg(:));
+
+%% ============================================================
+% EXTRACT BACKGROUND VALUES
+% ============================================================
+
+V_bg_measured = ...
+    SPC_background(measuredBackgroundMask);
+
+%% ============================================================
+% FORCE COLUMN VECTORS
+% ============================================================
+
+X_bg_measured = X_bg_measured(:);
+
+Y_bg_measured = Y_bg_measured(:);
+
+V_bg_measured = V_bg_measured(:);
+
+%% ============================================================
+% CREATE BACKGROUND INTERPOLANT
+% ============================================================
+
+F_background = scatteredInterpolant( ...
+    X_bg_measured, ...
+    Y_bg_measured, ...
+    V_bg_measured, ...
+    'natural', ...
+    'nearest');
+
+%% ============================================================
+% CREATE REAL SCAN PHYSICAL GRID
+% ============================================================
+
+[X_real_grid,Y_real_grid] = ...
+    meshgrid( ...
+    x_grid, ...
+    y_grid);
+
+%% ============================================================
+% INTERPOLATE BACKGROUND ONTO REAL SCAN GRID
+% ============================================================
+
+Background_on_real_grid = ...
+    F_background( ...
+    X_real_grid, ...
+    Y_real_grid);
+
+%% ============================================================
+% DISPLAY INTERPOLATED BACKGROUND
+% ============================================================
+
+figure
+
+imagesc( ...
+    rot90(Background_on_real_grid));
+
+axis image
+axis ij
+
+colormap(gray)
+colorbar
+
+title(sprintf( ...
+    'Background on Real Scan Grid (%d x %d)', ...
+    Nx,Ny))
+
+xlabel('Mirror X Position')
+ylabel('Mirror Y Position')
+
+%% ============================================================
+% ============================================================
+% BACKGROUND SUBTRACTION
+% ============================================================
+% ============================================================
+
+BackgroundCorrected = ...
+    SPC_frame - Background_on_real_grid;
+
+%% ============================================================
+% REMOVE NEGATIVE VALUES
+% ============================================================
+
+BackgroundCorrected( ...
+    BackgroundCorrected < 0) = 0;
+
+%% ============================================================
+% KEEP ONLY MEASURED REAL SCAN POINTS
+% ============================================================
+
+BackgroundCorrected( ...
+    ~measuredMask) = NaN;
+
+%% ============================================================
+% DISPLAY BACKGROUND CORRECTED IMAGE
+% ============================================================
+
+figure
+
+imagesc( ...
+    rot90(BackgroundCorrected));
+
+axis image
+axis ij
+
+colormap(gray)
+colorbar
+
+title(sprintf( ...
+    'Background Corrected SPC Image (%d x %d)', ...
+    Nx,Ny))
+
+xlabel('Mirror X Position')
+ylabel('Mirror Y Position')
+
+%% ============================================================
+% ============================================================
+% STATISTICAL SOURCE DETECTION
+% ============================================================
+% ============================================================
+%
+% A source is considered statistically significant when
+% the measured count is greater than:
+%
+%       Background + 3*Standard Deviation
+%
+% This gives a 3-sigma detection threshold.
+%
+% ============================================================
+
+%% ============================================================
+% SET DETECTION LEVEL
+% ============================================================
+
+sigmaLevel = 3;
+
+%% ============================================================
+% CREATE LOCAL DETECTION THRESHOLD
+% ============================================================
+%
+% The background is spatially varying, so the threshold
+% is also spatially varying.
+%
+%       Threshold(x,y)
+%       =
+%       Background(x,y) + 3*Background_SD
+%
+% ============================================================
+
+DetectionThreshold = ...
+    Background_on_real_grid + ...
+    sigmaLevel * backgroundSD;
+
+%% ============================================================
+% DETECT SOURCES
+% ============================================================
+
+DetectedSources = ...
+    SPC_frame > DetectionThreshold;
+
+%% ============================================================
+% ONLY CONSIDER MEASURED SCAN POINTS
+% ============================================================
+
+DetectedSources = ...
+    DetectedSources & measuredMask;
+
+%% ============================================================
+% CREATE THRESHOLDED IMAGE
+% ============================================================
+
+ThresholdedImage = ...
+    zeros(Ny,Nx);
+
+ThresholdedImage(DetectedSources) = ...
+    BackgroundCorrected(DetectedSources);
+
+ThresholdedImage(~measuredMask) = ...
+    NaN;
+
+%% ============================================================
+% DISPLAY DETECTION THRESHOLD
+% ============================================================
+
+figure
+
+imagesc( ...
+    rot90(DetectionThreshold));
+
+axis image
+axis ij
+
+colormap(gray)
+colorbar
+
+title(sprintf( ...
+    '3-Sigma Detection Threshold (%d x %d)', ...
+    Nx,Ny))
+
+xlabel('Mirror X Position')
+ylabel('Mirror Y Position')
+
+%% ============================================================
+% DISPLAY DETECTED SOURCES
+% ============================================================
+
+figure
+
+imagesc( ...
+    rot90(ThresholdedImage));
+
+axis image
+axis ij
+
+colormap(gray)
+colorbar
+
+title(sprintf( ...
+    'Detected Sources (> Background + %d\\sigma)', ...
+    sigmaLevel))
+
+xlabel('Mirror X Position')
+ylabel('Mirror Y Position')
+
+%% ============================================================
+% DISPLAY BINARY SOURCE MASK
+% ============================================================
+
+figure
+
+imagesc( ...
+    rot90(DetectedSources));
+
+axis image
+axis ij
+
+colormap(gray)
+colorbar
+
+title('Binary Statistical Source Detection')
+
+xlabel('Mirror X Position')
+ylabel('Mirror Y Position')
+
+%% ============================================================
+% ============================================================
+% SOURCE CENTROID DETECTION
+% ============================================================
+% ============================================================
+
+%% ============================================================
+% CONNECTED SOURCE REGIONS
+% ============================================================
+
+sourceRegions = ...
+    bwconncomp(DetectedSources,8);
+
+numSources = ...
+    sourceRegions.NumObjects;
+
+%% ============================================================
+% INITIALISE CENTROID ARRAYS
+% ============================================================
+
+centroidX_pixel = ...
+    zeros(numSources,1);
+
+centroidY_pixel = ...
+    zeros(numSources,1);
+
+centroidX_physical = ...
+    zeros(numSources,1);
+
+centroidY_physical = ...
+    zeros(numSources,1);
+
+sourcePeak = ...
+    zeros(numSources,1);
+
+sourceTotalCounts = ...
+    zeros(numSources,1);
+
+%% ============================================================
+% CALCULATE SOURCE CENTROIDS
+% ============================================================
+
+for s = 1:numSources
+
+    pixelIndices = ...
+        sourceRegions.PixelIdxList{s};
+
+    [rows,cols] = ...
+        ind2sub( ...
+        [Ny,Nx], ...
+        pixelIndices);
+
+    sourceValues = ...
+        BackgroundCorrected(pixelIndices);
+
+    %% ========================================================
+    % WEIGHTED CENTROID
+    % ========================================================
+
+    totalWeight = ...
+        sum(sourceValues);
+
+    if totalWeight > 0
+
+        centroidX_pixel(s) = ...
+            sum(cols .* sourceValues) / ...
+            totalWeight;
+
+        centroidY_pixel(s) = ...
+            sum(rows .* sourceValues) / ...
+            totalWeight;
+
+    else
+
+        centroidX_pixel(s) = ...
+            mean(cols);
+
+        centroidY_pixel(s) = ...
+            mean(rows);
+
+    end
+
+    %% ========================================================
+    % CONVERT CENTROID TO PHYSICAL MIRROR POSITION
+    % ========================================================
+
+    centroidX_physical(s) = ...
+        interp1( ...
+        1:Nx, ...
+        x_grid, ...
+        centroidX_pixel(s), ...
+        'linear');
+
+    centroidY_physical(s) = ...
+        interp1( ...
+        1:Ny, ...
+        y_grid, ...
+        centroidY_pixel(s), ...
+        'linear');
+
+    %% ========================================================
+    % SOURCE PEAK
+    % ========================================================
+
+    sourcePeak(s) = ...
+        max(sourceValues);
+
+    %% ========================================================
+    % TOTAL SOURCE COUNTS
+    % ========================================================
+
+    sourceTotalCounts(s) = ...
+        sum(sourceValues);
+
+end
+
+%% ============================================================
+% DISPLAY SOURCE CENTROIDS
+% ============================================================
+
+figure
+
+imagesc( ...
+    rot90(BackgroundCorrected));
+
+axis image
+axis ij
+
+colormap(gray)
+colorbar
+
+hold on
+
+for s = 1:numSources
+
+    plot( ...
+        Nx - centroidX_pixel(s) + 1, ...
+        centroidY_pixel(s), ...
+        'r+', ...
+        'MarkerSize',12, ...
+        'LineWidth',2);
+
+    text( ...
+        Nx - centroidX_pixel(s) + 1 + 0.5, ...
+        centroidY_pixel(s), ...
+        sprintf('%d',s), ...
+        'Color','r', ...
+        'FontSize',10, ...
+        'FontWeight','bold');
+
+end
+
+title(sprintf( ...
+    'Detected Source Centroids (%d sources)', ...
+    numSources))
+
+xlabel('Mirror X Position')
+ylabel('Mirror Y Position')
+
+hold off
+
+%% ============================================================
+% ============================================================
+% FIND MEASURED SCAN PERIMETER
+% ============================================================
+% ============================================================
+
+[row_measured,col_measured] = ...
+    find(measuredMask);
+
+if length(row_measured) >= 3
+
+    shp = alphaShape( ...
+        col_measured, ...
+        row_measured, ...
+        Inf);
+
+    [X_grid,Y_grid] = ...
+        meshgrid( ...
+        1:Nx, ...
+        1:Ny);
+
+    insidePerimeter = ...
+        inShape( ...
+        shp, ...
+        X_grid, ...
+        Y_grid);
+
+else
+
+    insidePerimeter = ...
+        measuredMask;
+
+end
+
+%% ============================================================
+% EVERYTHING OUTSIDE MEASURED REGION
+% ============================================================
+
+outsidePerimeter = ...
+    ~insidePerimeter;
+
+%% ============================================================
+% ============================================================
+% 2D SURROUNDING-POINT INTERPOLATION
+% ============================================================
+% ============================================================
+
+%% ============================================================
+% FIND MEASURED POINTS
+% ============================================================
+
+[row_measured,col_measured] = ...
+    find(measuredMask);
+
+%% ============================================================
+% CONVERT TO PHYSICAL COORDINATES
+% ============================================================
+
+X_measured = ...
+    x_grid(col_measured(:));
+
+Y_measured = ...
+    y_grid(row_measured(:));
+
+%% ============================================================
+% EXTRACT BACKGROUND-CORRECTED VALUES
+% ============================================================
+
+V_measured = ...
+    BackgroundCorrected( ...
+    measuredMask);
+
+%% ============================================================
+% FORCE COLUMN VECTORS
+% ============================================================
+
+X_measured = X_measured(:);
+
+Y_measured = Y_measured(:);
+
+V_measured = V_measured(:);
+
+%% ============================================================
+% CREATE 2D INTERPOLANT
+% ============================================================
+
+F = scatteredInterpolant( ...
+    X_measured, ...
+    Y_measured, ...
+    V_measured, ...
+    'natural', ...
+    'none');
+
+%% ============================================================
+% CREATE PHYSICAL GRID
+% ============================================================
+
+[X_physical,Y_physical] = ...
+    meshgrid( ...
+    x_grid, ...
+    y_grid);
+
+%% ============================================================
+% INTERPOLATE
+% ============================================================
+
+SPC_filled = ...
+    F( ...
+    X_physical, ...
+    Y_physical);
+
+%% ============================================================
+% KEEP ORIGINAL MEASUREMENTS EXACTLY
+% ============================================================
+
+SPC_filled(measuredMask) = ...
+    BackgroundCorrected(measuredMask);
+
+%% ============================================================
+% REMOVE OUTSIDE PERIMETER
+% ============================================================
+
+SPC_filled(outsidePerimeter) = NaN;
+
+%% ============================================================
+% DISPLAY INTERPOLATED IMAGE
+% ============================================================
+
+figure
+
+imagesc( ...
+    rot90(SPC_filled));
+
+axis image
+axis ij
+
+colormap(gray)
+colorbar
+
+title(sprintf( ...
+    '2D Interpolated + Background Corrected (%d x %d)', ...
+    Nx,Ny))
+
+xlabel('Mirror X Position')
+ylabel('Mirror Y Position')
+
+%% ============================================================
+% ============================================================
+% FINAL INFORMATION
+% ============================================================
+% ============================================================
+
+fprintf('\n');
+fprintf('============================================\n');
+fprintf(' RECONSTRUCTION INFORMATION\n');
+fprintf('============================================\n');
+
+fprintf('\nBACKGROUND FILE:\n');
+fprintf('%s\n',backgroundFilename);
+
+fprintf('\nREAL SCAN FILE:\n');
+fprintf('%s\n',scanFilename);
+
+fprintf('\nGRID INFORMATION:\n');
+
+fprintf('Real scan grid        : %d x %d\n', ...
+    Nx,Ny);
+
+fprintf('Background grid       : %d x %d\n', ...
+    Nx_bg,Ny_bg);
+
+fprintf('Measured real points  : %d\n', ...
+    sum(measuredMask(:)));
+
+fprintf('Expected real points  : %d\n', ...
+    Nx*Ny);
+
+fprintf('Missing real points   : %d\n', ...
+    Nx*Ny-sum(measuredMask(:)));
+
+fprintf('\nBACKGROUND STATISTICS:\n');
+
+fprintf('Background mean       : %.2f\n', ...
+    backgroundMean);
+
+fprintf('Background median     : %.2f\n', ...
+    backgroundMedian);
+
+fprintf('Background SD         : %.2f\n', ...
+    backgroundSD);
+
+fprintf('\nSTATISTICAL DETECTION:\n');
+
+fprintf('Sigma level           : %d sigma\n', ...
+    sigmaLevel);
+
+fprintf('Detection threshold   : Background + %d*SD\n', ...
+    sigmaLevel);
+
+fprintf('Detected sources      : %d\n', ...
+    numSources);
+
+fprintf('\n');
+
+if numSources > 0
+
+    fprintf('SOURCE CENTROIDS:\n');
+
+    fprintf('\n');
+
+    fprintf('Source     X physical       Y physical       Peak       Total\n');
+
+    fprintf('---------------------------------------------------------------\n');
+
+    for s = 1:numSources
+
+        fprintf( ...
+            '%3d     %12.6f     %12.6f     %8.2f     %8.2f\n', ...
+            s, ...
+            centroidX_physical(s), ...
+            centroidY_physical(s), ...
+            sourcePeak(s), ...
+            sourceTotalCounts(s));
+
+    end
+
+else
+
+    fprintf('No statistically significant sources detected.\n');
+
+end
+
+fprintf('\nBACKGROUND CORRECTION:\n');
+
+fprintf('Background interpolated onto real scan grid.\n');
+
+fprintf('Background subtracted point-by-point.\n');
+
+fprintf('Negative values set to zero.\n');
+
+fprintf('Interpolation performed only inside measured perimeter.\n');
+
+fprintf('\n============================================\n');
+
+fprintf('\n');
+fprintf('Reconstruction complete.\n');
+
+fprintf('Real scan grid fixed at %d x %d.\n', ...
+    Nx,Ny);
+
+fprintf('Background grid automatically detected as %d x %d.\n', ...
+    Nx_bg,Ny_bg);
+
+fprintf('Statistical source detection performed at %d sigma.\n', ...
+    sigmaLevel);
