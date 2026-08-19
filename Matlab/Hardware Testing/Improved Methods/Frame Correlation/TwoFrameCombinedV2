@@ -1,0 +1,1082 @@
+%% ============================================================
+% TASK 10
+% CORRELATION OF TWO SINGLE PHOTON CAMERA FRAMES
+%
+% Reconstruct two photon-count images from CSV files,
+% background correct them, interpolate the measured scan points,
+% register the frames and average them to improve image quality.
+%
+% PIPELINE:
+%
+% CSV
+%   |
+%   +--> 50 x 50 grid
+%   |
+%   +--> 90 degree rotation
+%   |
+%   +--> Dark-count correction
+%   |
+%   +--> Background correction
+%   |
+%   +--> Measured scan perimeter
+%   |
+%   +--> 2D interpolation inside measured region
+%   |
+%   +--> Frame registration
+%   |
+%   +--> Average frames
+%   |
+%   +--> Difference image
+%
+% NO RICHARDSON-LUCY
+%
+% ============================================================
+
+clear;
+clc;
+close all;
+
+tic
+
+%% ============================================================
+% FOLDER
+% ============================================================
+
+folder = ...
+    '\\userfs\bh1308\w2k\Desktop\Single Photon Camera\CSV\Testing';
+
+%% ============================================================
+% SELECT TWO CSV FILES
+% ============================================================
+
+[file1,path] = uigetfile( ...
+    fullfile(folder,'*.csv'), ...
+    'Select First Photon Scan');
+
+if isequal(file1,0)
+
+    error('First CSV file not selected.');
+
+end
+
+[file2,~] = uigetfile( ...
+    fullfile(folder,'*.csv'), ...
+    'Select Second Photon Scan');
+
+if isequal(file2,0)
+
+    error('Second CSV file not selected.');
+
+end
+
+fprintf('\n');
+fprintf('Frame 1: %s\n',file1);
+fprintf('Frame 2: %s\n',file2);
+
+%% ============================================================
+% PARAMETERS
+% ============================================================
+
+Nx = 50;
+Ny = 50;
+
+%% ============================================================
+% DARK COUNT PARAMETERS
+% ============================================================
+
+INTEGRATION_TIME = 0.1;
+
+DARK_COUNT_RATE = 250;
+
+Dark_counts = ...
+    DARK_COUNT_RATE * ...
+    INTEGRATION_TIME;
+
+%% ============================================================
+% INTERPOLATION METHOD
+% ============================================================
+
+interpolationMethod = 'natural';
+
+%% ============================================================
+% ============================================================
+% FRAME 1
+% ============================================================
+% ============================================================
+
+fprintf('\n');
+fprintf('=============================================\n');
+fprintf('PROCESSING FRAME 1\n');
+fprintf('=============================================\n');
+
+%% ============================================================
+% READ CSV
+% ============================================================
+
+data = ...
+    readtable( ...
+    fullfile(path,file1));
+
+%% ============================================================
+% EXTRACT DATA
+% ============================================================
+
+mirrorX = data.X;
+
+mirrorY = data.Y;
+
+Counts = data.Count;
+
+%% ============================================================
+% REMOVE INVALID DATA
+% ============================================================
+
+valid = ...
+    isfinite(mirrorX) & ...
+    isfinite(mirrorY) & ...
+    isfinite(Counts);
+
+mirrorX = mirrorX(valid);
+
+mirrorY = mirrorY(valid);
+
+Counts = Counts(valid);
+
+%% ============================================================
+% CREATE 50 x 50 PHYSICAL GRID
+% ============================================================
+
+x_grid = ...
+    linspace( ...
+    min(mirrorX), ...
+    max(mirrorX), ...
+    Nx);
+
+y_grid = ...
+    linspace( ...
+    min(mirrorY), ...
+    max(mirrorY), ...
+    Ny);
+
+%% ============================================================
+% MAP MEASUREMENTS TO GRID
+% ============================================================
+
+SPC_counts = ...
+    zeros(Ny,Nx);
+
+SPC_visits = ...
+    zeros(Ny,Nx);
+
+for k = 1:length(Counts)
+
+    [~,x_index] = ...
+        min(abs(x_grid - mirrorX(k)));
+
+    [~,y_index] = ...
+        min(abs(y_grid - mirrorY(k)));
+
+    SPC_counts( ...
+        y_index,x_index) = ...
+        SPC_counts( ...
+        y_index,x_index) + ...
+        Counts(k);
+
+    SPC_visits( ...
+        y_index,x_index) = ...
+        SPC_visits( ...
+        y_index,x_index) + 1;
+
+end
+
+%% ============================================================
+% AVERAGE REPEATED MEASUREMENTS
+% ============================================================
+
+SPC_frame = ...
+    zeros(Ny,Nx);
+
+measuredMask = ...
+    SPC_visits > 0;
+
+SPC_frame(measuredMask) = ...
+    SPC_counts(measuredMask) ./ ...
+    SPC_visits(measuredMask);
+
+%% ============================================================
+% ROTATE IMAGE BY 90 DEGREES
+% ============================================================
+
+SPC_frame = ...
+    rot90(SPC_frame);
+
+measuredMask = ...
+    rot90(measuredMask);
+
+%% ============================================================
+% DISPLAY RAW FRAME
+% ============================================================
+
+figure
+
+imagesc(SPC_frame)
+
+axis image
+axis ij
+
+colormap(gray)
+colorbar
+
+title('Frame 1 Raw SPC Image')
+
+xlabel('X Pixel')
+ylabel('Y Pixel')
+
+%% ============================================================
+% ============================================================
+% DARK COUNT CORRECTION
+% ============================================================
+% ============================================================
+
+SPC_corrected = ...
+    SPC_frame - ...
+    Dark_counts;
+
+%% ============================================================
+% REMOVE NEGATIVE VALUES
+% ============================================================
+
+SPC_corrected( ...
+    SPC_corrected < 0) = 0;
+
+%% ============================================================
+% ============================================================
+% BACKGROUND CORRECTION
+% ============================================================
+% ============================================================
+
+background1 = ...
+    median( ...
+    SPC_corrected(measuredMask));
+
+Photon_image1 = ...
+    SPC_corrected - ...
+    background1;
+
+%% ============================================================
+% REMOVE NEGATIVE VALUES
+% ============================================================
+
+Photon_image1( ...
+    Photon_image1 < 0) = 0;
+
+%% ============================================================
+% KEEP ONLY MEASURED REGION
+% ============================================================
+
+Photon_image1( ...
+    ~measuredMask) = NaN;
+
+%% ============================================================
+% ============================================================
+% FIND MEASURED SCAN PERIMETER
+% ============================================================
+% ============================================================
+
+[row_measured,col_measured] = ...
+    find(measuredMask);
+
+if length(row_measured) >= 3
+
+    shp = alphaShape( ...
+        col_measured, ...
+        row_measured, ...
+        Inf);
+
+    [X_index_grid,Y_index_grid] = ...
+        meshgrid( ...
+        1:Nx, ...
+        1:Ny);
+
+    insidePerimeter1 = ...
+        inShape( ...
+        shp, ...
+        X_index_grid, ...
+        Y_index_grid);
+
+else
+
+    insidePerimeter1 = ...
+        measuredMask;
+
+end
+
+%% ============================================================
+% ============================================================
+% INTERPOLATE FRAME 1
+% ============================================================
+% ============================================================
+
+[row_measured,col_measured] = ...
+    find(measuredMask);
+
+%% ============================================================
+% CONVERT TO PHYSICAL COORDINATES
+% ============================================================
+
+X_measured = ...
+    x_grid(col_measured);
+
+Y_measured = ...
+    y_grid(row_measured);
+
+%% ============================================================
+% EXTRACT VALUES
+% ============================================================
+
+V_measured = ...
+    Photon_image1(measuredMask);
+
+%% ============================================================
+% FORCE COLUMN VECTORS
+% ============================================================
+
+X_measured = X_measured(:);
+
+Y_measured = Y_measured(:);
+
+V_measured = V_measured(:);
+
+%% ============================================================
+% CREATE INTERPOLANT
+% ============================================================
+
+F1 = ...
+    scatteredInterpolant( ...
+    X_measured, ...
+    Y_measured, ...
+    V_measured, ...
+    interpolationMethod, ...
+    'none');
+
+%% ============================================================
+% CREATE PHYSICAL GRID
+% ============================================================
+
+[X_physical,Y_physical] = ...
+    meshgrid( ...
+    x_grid, ...
+    y_grid);
+
+%% ============================================================
+% INTERPOLATE
+% ============================================================
+
+Interpolated1 = ...
+    F1( ...
+    X_physical, ...
+    Y_physical);
+
+%% ============================================================
+% KEEP ORIGINAL MEASUREMENTS EXACTLY
+% ============================================================
+
+Interpolated1(measuredMask) = ...
+    Photon_image1(measuredMask);
+
+%% ============================================================
+% REMOVE VALUES OUTSIDE MEASURED PERIMETER
+% ============================================================
+
+Interpolated1( ...
+    ~insidePerimeter1) = NaN;
+
+%% ============================================================
+% DISPLAY INTERPOLATED FRAME 1
+% ============================================================
+
+figure
+
+imagesc(Interpolated1)
+
+axis image
+axis ij
+
+colormap(gray)
+colorbar
+
+title('Frame 1 — Interpolated + Background Corrected')
+
+xlabel('X Pixel')
+ylabel('Y Pixel')
+
+%% ============================================================
+% ============================================================
+% FRAME 2
+% ============================================================
+% ============================================================
+
+fprintf('\n');
+fprintf('=============================================\n');
+fprintf('PROCESSING FRAME 2\n');
+fprintf('=============================================\n');
+
+%% ============================================================
+% READ CSV
+% ============================================================
+
+data = ...
+    readtable( ...
+    fullfile(path,file2));
+
+%% ============================================================
+% EXTRACT DATA
+% ============================================================
+
+mirrorX = data.X;
+
+mirrorY = data.Y;
+
+Counts = data.Count;
+
+%% ============================================================
+% REMOVE INVALID DATA
+% ============================================================
+
+valid = ...
+    isfinite(mirrorX) & ...
+    isfinite(mirrorY) & ...
+    isfinite(Counts);
+
+mirrorX = mirrorX(valid);
+
+mirrorY = mirrorY(valid);
+
+Counts = Counts(valid);
+
+%% ============================================================
+% CREATE 50 x 50 PHYSICAL GRID
+% ============================================================
+
+x_grid = ...
+    linspace( ...
+    min(mirrorX), ...
+    max(mirrorX), ...
+    Nx);
+
+y_grid = ...
+    linspace( ...
+    min(mirrorY), ...
+    max(mirrorY), ...
+    Ny);
+
+%% ============================================================
+% MAP MEASUREMENTS TO GRID
+% ============================================================
+
+SPC_counts = ...
+    zeros(Ny,Nx);
+
+SPC_visits = ...
+    zeros(Ny,Nx);
+
+for k = 1:length(Counts)
+
+    [~,x_index] = ...
+        min(abs(x_grid - mirrorX(k)));
+
+    [~,y_index] = ...
+        min(abs(y_grid - mirrorY(k)));
+
+    SPC_counts( ...
+        y_index,x_index) = ...
+        SPC_counts( ...
+        y_index,x_index) + ...
+        Counts(k);
+
+    SPC_visits( ...
+        y_index,x_index) = ...
+        SPC_visits( ...
+        y_index,x_index) + 1;
+
+end
+
+%% ============================================================
+% AVERAGE REPEATED MEASUREMENTS
+% ============================================================
+
+SPC_frame = ...
+    zeros(Ny,Nx);
+
+measuredMask = ...
+    SPC_visits > 0;
+
+SPC_frame(measuredMask) = ...
+    SPC_counts(measuredMask) ./ ...
+    SPC_visits(measuredMask);
+
+%% ============================================================
+% ROTATE IMAGE BY 90 DEGREES
+% ============================================================
+
+SPC_frame = ...
+    rot90(SPC_frame);
+
+measuredMask = ...
+    rot90(measuredMask);
+
+%% ============================================================
+% DISPLAY RAW FRAME
+% ============================================================
+
+figure
+
+imagesc(SPC_frame)
+
+axis image
+axis ij
+
+colormap(gray)
+colorbar
+
+title('Frame 2 Raw SPC Image')
+
+xlabel('X Pixel')
+ylabel('Y Pixel')
+
+%% ============================================================
+% ============================================================
+% DARK COUNT CORRECTION
+% ============================================================
+% ============================================================
+
+SPC_corrected = ...
+    SPC_frame - ...
+    Dark_counts;
+
+%% ============================================================
+% REMOVE NEGATIVE VALUES
+% ============================================================
+
+SPC_corrected( ...
+    SPC_corrected < 0) = 0;
+
+%% ============================================================
+% ============================================================
+% BACKGROUND CORRECTION
+% ============================================================
+% ============================================================
+
+background2 = ...
+    median( ...
+    SPC_corrected(measuredMask));
+
+Photon_image2 = ...
+    SPC_corrected - ...
+    background2;
+
+%% ============================================================
+% REMOVE NEGATIVE VALUES
+% ============================================================
+
+Photon_image2( ...
+    Photon_image2 < 0) = 0;
+
+%% ============================================================
+% KEEP ONLY MEASURED REGION
+% ============================================================
+
+Photon_image2( ...
+    ~measuredMask) = NaN;
+
+%% ============================================================
+% ============================================================
+% FIND MEASURED SCAN PERIMETER
+% ============================================================
+% ============================================================
+
+[row_measured,col_measured] = ...
+    find(measuredMask);
+
+if length(row_measured) >= 3
+
+    shp = alphaShape( ...
+        col_measured, ...
+        row_measured, ...
+        Inf);
+
+    [X_index_grid,Y_index_grid] = ...
+        meshgrid( ...
+        1:Nx, ...
+        1:Ny);
+
+    insidePerimeter2 = ...
+        inShape( ...
+        shp, ...
+        X_index_grid, ...
+        Y_index_grid);
+
+else
+
+    insidePerimeter2 = ...
+        measuredMask;
+
+end
+
+%% ============================================================
+% ============================================================
+% INTERPOLATE FRAME 2
+% ============================================================
+% ============================================================
+
+[row_measured,col_measured] = ...
+    find(measuredMask);
+
+%% ============================================================
+% CONVERT TO PHYSICAL COORDINATES
+% ============================================================
+
+X_measured = ...
+    x_grid(col_measured);
+
+Y_measured = ...
+    y_grid(row_measured);
+
+%% ============================================================
+% EXTRACT VALUES
+% ============================================================
+
+V_measured = ...
+    Photon_image2(measuredMask);
+
+%% ============================================================
+% FORCE COLUMN VECTORS
+% ============================================================
+
+X_measured = X_measured(:);
+
+Y_measured = Y_measured(:);
+
+V_measured = V_measured(:);
+
+%% ============================================================
+% CREATE INTERPOLANT
+% ============================================================
+
+F2 = ...
+    scatteredInterpolant( ...
+    X_measured, ...
+    Y_measured, ...
+    V_measured, ...
+    interpolationMethod, ...
+    'none');
+
+%% ============================================================
+% CREATE PHYSICAL GRID
+% ============================================================
+
+[X_physical,Y_physical] = ...
+    meshgrid( ...
+    x_grid, ...
+    y_grid);
+
+%% ============================================================
+% INTERPOLATE
+% ============================================================
+
+Interpolated2 = ...
+    F2( ...
+    X_physical, ...
+    Y_physical);
+
+%% ============================================================
+% KEEP ORIGINAL MEASUREMENTS EXACTLY
+% ============================================================
+
+Interpolated2(measuredMask) = ...
+    Photon_image2(measuredMask);
+
+%% ============================================================
+% REMOVE VALUES OUTSIDE MEASURED PERIMETER
+% ============================================================
+
+Interpolated2( ...
+    ~insidePerimeter2) = NaN;
+
+%% ============================================================
+% DISPLAY INTERPOLATED FRAME 2
+% ============================================================
+
+figure
+
+imagesc(Interpolated2)
+
+axis image
+axis ij
+
+colormap(gray)
+colorbar
+
+title('Frame 2 — Interpolated + Background Corrected')
+
+xlabel('X Pixel')
+ylabel('Y Pixel')
+
+%% ============================================================
+% ============================================================
+% PREPARE FRAMES FOR REGISTRATION
+% ============================================================
+%
+% imregcorr cannot use NaN values reliably.
+%
+% Replace NaN outside the measured region with zero.
+%
+% ============================================================
+
+Frame1_forRegistration = ...
+    Interpolated1;
+
+Frame2_forRegistration = ...
+    Interpolated2;
+
+Frame1_forRegistration( ...
+    isnan(Frame1_forRegistration)) = 0;
+
+Frame2_forRegistration( ...
+    isnan(Frame2_forRegistration)) = 0;
+
+%% ============================================================
+% ============================================================
+% REGISTER FRAME 2 TO FRAME 1
+% ============================================================
+% ============================================================
+
+disp('Registering images...')
+
+%% ============================================================
+% ESTIMATE TRANSLATION
+% ============================================================
+
+tform = ...
+    imregcorr( ...
+    Frame2_forRegistration, ...
+    Frame1_forRegistration, ...
+    'translation');
+
+%% ============================================================
+% APPLY TRANSFORMATION
+% ============================================================
+
+RL_registered = ...
+    imwarp( ...
+    Frame2_forRegistration, ...
+    tform, ...
+    'OutputView', ...
+    imref2d(size(Frame1_forRegistration)));
+
+%% ============================================================
+% RENAME REGISTERED FRAME
+% ============================================================
+
+Frame2_registered = ...
+    RL_registered;
+
+%% ============================================================
+% ============================================================
+% CORRELATE / COMBINE BOTH FRAMES
+% ============================================================
+% ============================================================
+
+Combined = ...
+    (Frame1_forRegistration + ...
+     Frame2_registered) / 2;
+
+%% ============================================================
+% ============================================================
+% DIFFERENCE IMAGE
+% ============================================================
+% ============================================================
+
+Difference = ...
+    abs( ...
+    Frame1_forRegistration - ...
+    Frame2_registered);
+
+%% ============================================================
+% ============================================================
+% DISPLAY RESULTS
+% ============================================================
+% ============================================================
+
+figure( ...
+    'Name', ...
+    'Frame Correlation Results', ...
+    'Color', ...
+    'w')
+
+%% FRAME 1
+
+subplot(2,2,1)
+
+imagesc(Frame1_forRegistration)
+
+axis image
+axis ij
+
+colormap(gray)
+colorbar
+
+title('Frame 1')
+
+xlabel('X Pixel')
+ylabel('Y Pixel')
+
+%% FRAME 2 REGISTERED
+
+subplot(2,2,2)
+
+imagesc(Frame2_registered)
+
+axis image
+axis ij
+
+colormap(gray)
+colorbar
+
+title('Frame 2 Registered')
+
+xlabel('X Pixel')
+ylabel('Y Pixel')
+
+%% COMBINED
+
+subplot(2,2,3)
+
+imagesc(Combined)
+
+axis image
+axis ij
+
+colormap(gray)
+colorbar
+
+title('Combined Correlated Image')
+
+xlabel('X Pixel')
+ylabel('Y Pixel')
+
+%% DIFFERENCE
+
+subplot(2,2,4)
+
+imagesc(Difference)
+
+axis image
+axis ij
+
+colormap(gray)
+colorbar
+
+title('Difference Image')
+
+xlabel('X Pixel')
+ylabel('Y Pixel')
+
+%% ============================================================
+% ============================================================
+% CONTRAST ENHANCEMENT
+% ============================================================
+% ============================================================
+
+figure( ...
+    'Name', ...
+    'Contrast Enhanced Comparison', ...
+    'Color', ...
+    'w')
+
+%% FRAME 1
+
+subplot(1,3,1)
+
+imagesc( ...
+    imadjust( ...
+    mat2gray(Frame1_forRegistration)))
+
+axis image
+axis ij
+
+colormap(gray)
+colorbar
+
+title('Frame 1')
+
+%% FRAME 2
+
+subplot(1,3,2)
+
+imagesc( ...
+    imadjust( ...
+    mat2gray(Frame2_registered)))
+
+axis image
+axis ij
+
+colormap(gray)
+colorbar
+
+title('Frame 2 Registered')
+
+%% COMBINED
+
+subplot(1,3,3)
+
+imagesc( ...
+    imadjust( ...
+    mat2gray(Combined)))
+
+axis image
+axis ij
+
+colormap(gray)
+colorbar
+
+title('Combined')
+
+%% ============================================================
+% ============================================================
+% CALCULATE IMPROVEMENT
+% ============================================================
+% ============================================================
+
+noise1 = ...
+    std( ...
+    Frame1_forRegistration(:));
+
+noiseCombined = ...
+    std( ...
+    Combined(:));
+
+%% ============================================================
+% SIGNAL-TO-NOISE ESTIMATE
+% ============================================================
+%
+% This is a simple global comparison rather than a formal
+% detector SNR measurement.
+%
+% ============================================================
+
+meanSignal1 = ...
+    mean( ...
+    Frame1_forRegistration(:));
+
+meanSignalCombined = ...
+    mean( ...
+    Combined(:));
+
+SNR1 = ...
+    meanSignal1 / ...
+    max(noise1,eps);
+
+SNRCombined = ...
+    meanSignalCombined / ...
+    max(noiseCombined,eps);
+
+%% ============================================================
+% PRINT RESULTS
+% ============================================================
+
+fprintf('\n');
+fprintf('=============================================\n');
+fprintf('FRAME CORRELATION RESULTS\n');
+fprintf('=============================================\n');
+
+fprintf('\nFrame 1:\n');
+
+fprintf('Background median : %.3f\n', ...
+    background1);
+
+fprintf('Standard deviation: %.3f\n', ...
+    noise1);
+
+fprintf('Estimated SNR     : %.3f\n', ...
+    SNR1);
+
+fprintf('\nCombined:\n');
+
+fprintf('Standard deviation: %.3f\n', ...
+    noiseCombined);
+
+fprintf('Estimated SNR     : %.3f\n', ...
+    SNRCombined);
+
+fprintf('\n');
+
+if noiseCombined < noise1
+
+    fprintf( ...
+        'Noise reduced after combining frames.\n');
+
+else
+
+    fprintf( ...
+        'No global noise reduction detected.\n');
+
+end
+
+fprintf('=============================================\n');
+
+%% ============================================================
+% INTERPOLATION INFORMATION
+% ============================================================
+
+fprintf('\n');
+fprintf('=============================================\n');
+fprintf('INTERPOLATION INFORMATION\n');
+fprintf('=============================================\n');
+
+fprintf('Grid size: %d x %d\n', ...
+    Nx,Ny);
+
+fprintf('Interpolation method: %s\n', ...
+    interpolationMethod);
+
+fprintf(['Interpolation performed only inside ' ...
+         'the measured scan perimeter.\n']);
+
+fprintf(['Original measured points retained ' ...
+         'exactly.\n']);
+
+fprintf('=============================================\n');
+
+%% ============================================================
+% DARK COUNT INFORMATION
+% ============================================================
+
+fprintf('\n');
+fprintf('=============================================\n');
+fprintf('DARK COUNT CORRECTION\n');
+fprintf('=============================================\n');
+
+fprintf('Integration time : %.3f s\n', ...
+    INTEGRATION_TIME);
+
+fprintf('Dark count rate  : %.3f counts/s\n', ...
+    DARK_COUNT_RATE);
+
+fprintf('Dark counts/frame: %.3f\n', ...
+    Dark_counts);
+
+fprintf('=============================================\n');
+
+%% ============================================================
+% FINISH
+% ============================================================
+
+elapsedTime = toc;
+
+fprintf('\n');
+fprintf('Total processing time: %.3f seconds\n', ...
+    elapsedTime);
+
+fprintf('\n');
+fprintf('Task 10 complete.\n');
