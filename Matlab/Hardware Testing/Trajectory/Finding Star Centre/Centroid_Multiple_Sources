@@ -1,0 +1,835 @@
+%% ============================================================
+% SINGLE PHOTON CAMERA
+% MULTIPLE SOURCE CENTROID DETECTION
+%
+% CSV FILE
+%       |
+%       +--> 41 x 41 GRID
+%       |
+%       +--> BACKGROUND ESTIMATION
+%       |
+%       +--> BACKGROUND CORRECTION
+%       |
+%       +--> 90 DEGREE IMAGE ROTATION
+%       |
+%       +--> SOURCE DETECTION
+%       |
+%       +--> MULTIPLE SOURCE CENTROIDS
+%
+% CSV columns required:
+%
+%       X
+%       Y
+%       Count
+%
+% ============================================================
+
+clear;
+clc;
+close all;
+
+tic
+
+%% ============================================================
+% FOLDER
+% ============================================================
+
+folder = ...
+    '\\userfs\bh1308\w2k\Desktop\Single Photon Camera\CSV\Testing';
+
+%% ============================================================
+% PARAMETERS
+% ============================================================
+
+% Fixed reconstruction grid
+Nx = 41;
+Ny = 41;
+
+% Number of standard deviations above background
+sigmaLevel = 3;
+
+% Minimum number of pixels required for a source
+minimumSourcePixels = 2;
+
+% Connectivity
+% 8 = horizontal + vertical + diagonal
+connectivity = 8;
+
+%% ============================================================
+% SELECT CSV FILE
+% ============================================================
+
+[fileName,pathName] = uigetfile( ...
+    fullfile(folder,'*.csv'), ...
+    'Select REAL SCAN CSV file');
+
+if isequal(fileName,0)
+
+    disp('No file selected.');
+    return
+
+end
+
+fprintf('\n');
+fprintf('Selected file:\n');
+fprintf('%s\n',fileName);
+
+%% ============================================================
+% READ CSV
+% ============================================================
+
+data = readtable( ...
+    fullfile(pathName,fileName));
+
+%% ============================================================
+% CHECK REQUIRED COLUMNS
+% ============================================================
+
+requiredColumns = {'X','Y','Count'};
+
+for k = 1:length(requiredColumns)
+
+    if ~ismember( ...
+            requiredColumns{k}, ...
+            data.Properties.VariableNames)
+
+        error( ...
+            'CSV does not contain required column: %s', ...
+            requiredColumns{k});
+
+    end
+
+end
+
+%% ============================================================
+% EXTRACT DATA
+% ============================================================
+
+mirrorX = data.X;
+mirrorY = data.Y;
+Counts = data.Count;
+
+%% ============================================================
+% REMOVE INVALID DATA
+% ============================================================
+
+valid = ...
+    isfinite(mirrorX) & ...
+    isfinite(mirrorY) & ...
+    isfinite(Counts);
+
+mirrorX = mirrorX(valid);
+mirrorY = mirrorY(valid);
+Counts = Counts(valid);
+
+fprintf('\nValid measurements: %d\n', ...
+    length(Counts));
+
+%% ============================================================
+% ============================================================
+% CREATE FIXED 41 x 41 GRID
+% ============================================================
+% ============================================================
+
+x_min = min(mirrorX);
+x_max = max(mirrorX);
+
+y_min = min(mirrorY);
+y_max = max(mirrorY);
+
+x_grid = ...
+    linspace( ...
+    x_min, ...
+    x_max, ...
+    Nx);
+
+y_grid = ...
+    linspace( ...
+    y_min, ...
+    y_max, ...
+    Ny);
+
+%% ============================================================
+% GRID SPACING
+% ============================================================
+
+dx = mean(diff(x_grid));
+dy = mean(diff(y_grid));
+
+fprintf('\n');
+fprintf('============================================\n');
+fprintf(' GRID INFORMATION\n');
+fprintf('============================================\n');
+
+fprintf('Grid size : %d x %d\n',Nx,Ny);
+
+fprintf('X range  : %.10f -> %.10f\n', ...
+    x_min,x_max);
+
+fprintf('Y range  : %.10f -> %.10f\n', ...
+    y_min,y_max);
+
+fprintf('X spacing: %.10f\n',dx);
+
+fprintf('Y spacing: %.10f\n',dy);
+
+%% ============================================================
+% ============================================================
+% MAP CSV DATA TO 41 x 41 GRID
+% ============================================================
+% ============================================================
+
+x_index = ...
+    round( ...
+    (mirrorX - x_min) ./ dx) + 1;
+
+y_index = ...
+    round( ...
+    (mirrorY - y_min) ./ dy) + 1;
+
+%% ============================================================
+% KEEP VALID GRID INDICES
+% ============================================================
+
+validGrid = ...
+    x_index >= 1 & ...
+    x_index <= Nx & ...
+    y_index >= 1 & ...
+    y_index <= Ny;
+
+x_index = x_index(validGrid);
+y_index = y_index(validGrid);
+Counts = Counts(validGrid);
+
+%% ============================================================
+% CONVERT TO LINEAR INDICES
+% ============================================================
+
+linearIndex = ...
+    sub2ind( ...
+    [Ny,Nx], ...
+    y_index, ...
+    x_index);
+
+%% ============================================================
+% SUM COUNTS
+% ============================================================
+
+SPC_counts = ...
+    accumarray( ...
+    linearIndex, ...
+    Counts, ...
+    [Ny*Nx,1], ...
+    @sum, ...
+    0);
+
+%% ============================================================
+% COUNT VISITS
+% ============================================================
+
+SPC_visits = ...
+    accumarray( ...
+    linearIndex, ...
+    1, ...
+    [Ny*Nx,1], ...
+    @sum, ...
+    0);
+
+%% ============================================================
+% RESHAPE
+% ============================================================
+
+SPC_counts = ...
+    reshape( ...
+    SPC_counts, ...
+    Ny,Nx);
+
+SPC_visits = ...
+    reshape( ...
+    SPC_visits, ...
+    Ny,Nx);
+
+%% ============================================================
+% ============================================================
+% AVERAGE COUNTS
+% ============================================================
+% ============================================================
+
+SPC_frame = ...
+    zeros(Ny,Nx);
+
+measuredMask = ...
+    SPC_visits > 0;
+
+SPC_frame(measuredMask) = ...
+    SPC_counts(measuredMask) ./ ...
+    SPC_visits(measuredMask);
+
+%% ============================================================
+% ============================================================
+% ROTATE IMAGE BY 90 DEGREES
+% ============================================================
+%
+% IMPORTANT:
+%
+% From this point onwards the displayed image is:
+%
+%       rot90(SPC_frame)
+%
+% Source detection and centroid calculation are also performed
+% using this rotated image so that the centroid coordinates
+% directly correspond to what is displayed.
+%
+% ============================================================
+
+SPC_rotated = ...
+    rot90(SPC_frame);
+
+measuredMask_rotated = ...
+    rot90(measuredMask);
+
+%% ============================================================
+% ============================================================
+% DISPLAY RAW ROTATED IMAGE
+% ============================================================
+% ============================================================
+
+figure
+
+imagesc(SPC_rotated)
+
+axis image
+axis ij
+
+colormap(gray)
+colorbar
+
+title(sprintf( ...
+    'Raw SPC Image — 41 x 41\n%s', ...
+    fileName), ...
+    'Interpreter','none');
+
+xlabel('X Pixel')
+ylabel('Y Pixel')
+
+%% ============================================================
+% ============================================================
+% BACKGROUND ESTIMATION
+% ============================================================
+%
+% Estimate background using measured pixels.
+%
+% Median is used because it is less affected by bright sources
+% than the mean.
+%
+% ============================================================
+
+backgroundValues = ...
+    SPC_rotated(measuredMask_rotated);
+
+backgroundMean = ...
+    mean(backgroundValues);
+
+backgroundMedian = ...
+    median(backgroundValues);
+
+backgroundSD = ...
+    std(backgroundValues);
+
+%% ============================================================
+% DISPLAY BACKGROUND STATISTICS
+% ============================================================
+
+fprintf('\n');
+fprintf('============================================\n');
+fprintf(' BACKGROUND ESTIMATION\n');
+fprintf('============================================\n');
+
+fprintf('Mean       : %.3f\n', ...
+    backgroundMean);
+
+fprintf('Median     : %.3f\n', ...
+    backgroundMedian);
+
+fprintf('Standard deviation : %.3f\n', ...
+    backgroundSD);
+
+%% ============================================================
+% ============================================================
+% BACKGROUND SUBTRACTION
+% ============================================================
+% ============================================================
+
+BackgroundCorrected = ...
+    SPC_rotated - backgroundMedian;
+
+%% ============================================================
+% REMOVE NEGATIVE VALUES
+% ============================================================
+
+BackgroundCorrected( ...
+    BackgroundCorrected < 0) = 0;
+
+%% ============================================================
+% KEEP ONLY MEASURED PIXELS
+% ============================================================
+
+BackgroundCorrected( ...
+    ~measuredMask_rotated) = NaN;
+
+%% ============================================================
+% ============================================================
+% DISPLAY BACKGROUND CORRECTED IMAGE
+% ============================================================
+% ============================================================
+
+figure
+
+imagesc(BackgroundCorrected)
+
+axis image
+axis ij
+
+colormap(gray)
+colorbar
+
+title('Background Corrected SPC Image')
+
+xlabel('X Pixel')
+ylabel('Y Pixel')
+
+%% ============================================================
+% ============================================================
+% SOURCE DETECTION THRESHOLD
+% ============================================================
+% ============================================================
+
+threshold = ...
+    backgroundMedian + ...
+    sigmaLevel * backgroundSD;
+
+fprintf('\n');
+fprintf('============================================\n');
+fprintf(' SOURCE DETECTION\n');
+fprintf('============================================\n');
+
+fprintf('Sigma level : %.2f\n', ...
+    sigmaLevel);
+
+fprintf('Threshold   : %.3f\n', ...
+    threshold);
+
+%% ============================================================
+% CREATE SOURCE MASK
+% ============================================================
+%
+% Detect pixels above the background threshold.
+%
+% ============================================================
+
+sourceMask = ...
+    SPC_rotated > threshold;
+
+sourceMask = ...
+    sourceMask & measuredMask_rotated;
+
+%% ============================================================
+% DISPLAY SOURCE MASK
+% ============================================================
+
+figure
+
+imagesc(sourceMask)
+
+axis image
+axis ij
+
+colormap(gray)
+colorbar
+
+title(sprintf( ...
+    'Detected Source Pixels — %d Sigma', ...
+    sigmaLevel))
+
+xlabel('X Pixel')
+ylabel('Y Pixel')
+
+%% ============================================================
+% ============================================================
+% FIND CONNECTED SOURCE REGIONS
+% ============================================================
+% ============================================================
+
+CC = bwconncomp( ...
+    sourceMask, ...
+    connectivity);
+
+fprintf('\nInitial connected regions: %d\n', ...
+    CC.NumObjects);
+
+%% ============================================================
+% REMOVE SMALL REGIONS
+% ============================================================
+
+cleanMask = ...
+    false(size(sourceMask));
+
+for k = 1:CC.NumObjects
+
+    numberOfPixels = ...
+        numel(CC.PixelIdxList{k});
+
+    if numberOfPixels >= ...
+            minimumSourcePixels
+
+        cleanMask( ...
+            CC.PixelIdxList{k}) = true;
+
+    end
+
+end
+
+%% ============================================================
+% FIND FINAL SOURCE REGIONS
+% ============================================================
+
+CC = bwconncomp( ...
+    cleanMask, ...
+    connectivity);
+
+numSources = ...
+    CC.NumObjects;
+
+fprintf('Final sources detected: %d\n', ...
+    numSources);
+
+%% ============================================================
+% ============================================================
+% ALLOCATE RESULTS
+% ============================================================
+% ============================================================
+
+centroidX = zeros(numSources,1);
+centroidY = zeros(numSources,1);
+
+centroidXPhysical = zeros(numSources,1);
+centroidYPhysical = zeros(numSources,1);
+
+peakCounts = zeros(numSources,1);
+
+totalCounts = zeros(numSources,1);
+
+sourcePixelCount = zeros(numSources,1);
+
+%% ============================================================
+% ============================================================
+% CALCULATE PHOTON-WEIGHTED CENTROIDS
+% ============================================================
+%
+% Because SPC_rotated is now being used, these coordinates
+% correspond directly to the displayed image.
+%
+%       Xc = sum(Xi * Ci) / sum(Ci)
+%
+%       Yc = sum(Yi * Ci) / sum(Ci)
+%
+% ============================================================
+
+for k = 1:numSources
+
+    %% --------------------------------------------------------
+    % Get pixels belonging to source
+    % --------------------------------------------------------
+
+    pixelIndices = ...
+        CC.PixelIdxList{k};
+
+    %% --------------------------------------------------------
+    % Convert linear indices to row/column
+    % --------------------------------------------------------
+
+    [rows,cols] = ...
+        ind2sub( ...
+        [Ny,Nx], ...
+        pixelIndices);
+
+    %% --------------------------------------------------------
+    % Get background-corrected counts
+    % --------------------------------------------------------
+
+    counts = ...
+        BackgroundCorrected(pixelIndices);
+
+    %% --------------------------------------------------------
+    % Remove invalid values
+    % --------------------------------------------------------
+
+    validSource = ...
+        isfinite(counts);
+
+    rows = rows(validSource);
+    cols = cols(validSource);
+    counts = counts(validSource);
+
+    %% --------------------------------------------------------
+    % Number of pixels
+    % --------------------------------------------------------
+
+    sourcePixelCount(k) = ...
+        length(counts);
+
+    %% --------------------------------------------------------
+    % Total source counts
+    % --------------------------------------------------------
+
+    totalCounts(k) = ...
+        sum(counts);
+
+    %% --------------------------------------------------------
+    % Peak source count
+    % --------------------------------------------------------
+
+    peakCounts(k) = ...
+        max(counts);
+
+    %% --------------------------------------------------------
+    % Photon-weighted centroid
+    % --------------------------------------------------------
+
+    if totalCounts(k) > 0
+
+        centroidX(k) = ...
+            sum(cols .* counts) ./ ...
+            totalCounts(k);
+
+        centroidY(k) = ...
+            sum(rows .* counts) ./ ...
+            totalCounts(k);
+
+    else
+
+        centroidX(k) = ...
+            mean(cols);
+
+        centroidY(k) = ...
+            mean(rows);
+
+    end
+
+end
+
+%% ============================================================
+% ============================================================
+% CONVERT DISPLAY CENTROIDS BACK TO ORIGINAL PHYSICAL X/Y
+% ============================================================
+%
+% The image was rotated using:
+%
+%       rot90()
+%
+% Therefore:
+%
+%       display X = original Y
+%       display Y = Nx - original X + 1
+%
+% Reverse transformation:
+%
+%       original X = Nx - display Y + 1
+%       original Y = display X
+%
+% ============================================================
+
+originalXPixel = ...
+    Nx - centroidY + 1;
+
+originalYPixel = ...
+    centroidX;
+
+%% ============================================================
+% CONVERT ORIGINAL PIXELS TO PHYSICAL MIRROR COORDINATES
+% ============================================================
+
+centroidXPhysical = ...
+    interp1( ...
+    1:Nx, ...
+    x_grid, ...
+    originalXPixel);
+
+centroidYPhysical = ...
+    interp1( ...
+    1:Ny, ...
+    y_grid, ...
+    originalYPixel);
+
+%% ============================================================
+% ============================================================
+% DISPLAY CENTROIDS
+% ============================================================
+% ============================================================
+
+figure
+
+imagesc(BackgroundCorrected)
+
+axis image
+axis ij
+
+colormap(gray)
+colorbar
+
+hold on
+
+for k = 1:numSources
+
+    %% --------------------------------------------------------
+    % CENTROID IS ALREADY IN DISPLAY COORDINATES
+    % --------------------------------------------------------
+
+    plot( ...
+        centroidX(k), ...
+        centroidY(k), ...
+        'r+', ...
+        'MarkerSize',14, ...
+        'LineWidth',2);
+
+    %% --------------------------------------------------------
+    % SOURCE NUMBER
+    % --------------------------------------------------------
+
+    text( ...
+        centroidX(k) + 0.7, ...
+        centroidY(k), ...
+        sprintf('%d',k), ...
+        'Color','r', ...
+        'FontSize',12, ...
+        'FontWeight','bold');
+
+end
+
+title(sprintf( ...
+    'Multiple Source Centroids — %d Sources', ...
+    numSources))
+
+xlabel('Displayed X Pixel')
+ylabel('Displayed Y Pixel')
+
+hold off
+
+%% ============================================================
+% ============================================================
+% PRINT CENTROID RESULTS
+% ============================================================
+% ============================================================
+
+fprintf('\n');
+fprintf('============================================\n');
+fprintf(' CENTROID RESULTS\n');
+fprintf('============================================\n');
+
+fprintf('\n');
+
+fprintf(['Source   Display X   Display Y   ' ...
+         'Original X   Original Y   ' ...
+         'Physical X     Physical Y     ' ...
+         'Peak        Total      Pixels\n']);
+
+fprintf(['--------------------------------------------------------------------------------' ...
+         '------------\n']);
+
+for k = 1:numSources
+
+    fprintf( ...
+        '%3d      %8.3f    %8.3f      %8.3f    %8.3f    %11.6f   %11.6f   %9.2f   %10.2f    %4d\n', ...
+        k, ...
+        centroidX(k), ...
+        centroidY(k), ...
+        originalXPixel(k), ...
+        originalYPixel(k), ...
+        centroidXPhysical(k), ...
+        centroidYPhysical(k), ...
+        peakCounts(k), ...
+        totalCounts(k), ...
+        sourcePixelCount(k));
+
+end
+
+%% ============================================================
+% ============================================================
+% CREATE CENTROID IMAGE
+% ============================================================
+% ============================================================
+
+centroidImage = ...
+    zeros(Ny,Nx);
+
+for k = 1:numSources
+
+    x = round(centroidX(k));
+    y = round(centroidY(k));
+
+    if x >= 1 && x <= Nx && ...
+       y >= 1 && y <= Ny
+
+        centroidImage(y,x) = ...
+            peakCounts(k);
+
+    end
+
+end
+
+%% ============================================================
+% DISPLAY CENTROID POINT IMAGE
+% ============================================================
+
+figure
+
+imagesc(centroidImage)
+
+axis image
+axis ij
+
+colormap(gray)
+colorbar
+
+hold on
+
+for k = 1:numSources
+
+    plot( ...
+        centroidX(k), ...
+        centroidY(k), ...
+        'r+', ...
+        'MarkerSize',14, ...
+        'LineWidth',2);
+
+end
+
+title('Sources Represented by Centroid Points')
+
+xlabel('Displayed X Pixel')
+ylabel('Displayed Y Pixel')
+
+hold off
+
+
+%% ============================================================
+% FINISH
+% ============================================================
+
+elapsedTime = toc;
+
+fprintf('\n');
+fprintf('============================================\n');
+fprintf(' RECONSTRUCTION COMPLETE\n');
+fprintf('============================================\n');
+
+fprintf('File processed:\n%s\n', ...
+    fileName);
+
+fprintf('\nSources detected: %d\n', ...
+    numSources);
+
+fprintf('Processing time: %.3f seconds\n', ...
+    elapsedTime);
+
+
