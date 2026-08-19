@@ -1,0 +1,1622 @@
+%% ============================================================
+% SINGLE PHOTON CAMERA
+%
+% TASK 10 + MULTIPLE SOURCE CENTROID DETECTION
+%
+% TWO CSV FILES
+%       |
+%       +--> 41 x 41 GRID
+%       |
+%       +--> 90 DEGREE ROTATION
+%       |
+%       +--> DARK COUNT CORRECTION
+%       |
+%       +--> BACKGROUND CORRECTION
+%       |
+%       +--> 2D INTERPOLATION
+%       |
+%       +--> FRAME REGISTRATION
+%       |
+%       +--> COMBINE / AVERAGE
+%       |
+%       +--> SOURCE DETECTION
+%       |
+%       +--> CONNECTED SOURCE REGIONS
+%       |
+%       +--> MULTIPLE SOURCE CENTROIDS
+%
+% NO RICHARDSON-LUCY
+%
+% CSV columns required:
+%
+%       X
+%       Y
+%       Count
+%
+% ============================================================
+
+clear;
+clc;
+close all;
+
+tic
+
+%% ============================================================
+% FOLDER
+% ============================================================
+
+folder = ...
+    '\\userfs\bh1308\w2k\Desktop\Single Photon Camera\CSV\Testing';
+
+%% ============================================================
+% ============================================================
+% PARAMETERS
+% ============================================================
+% ============================================================
+
+% Fixed reconstruction grid
+Nx = 41;
+Ny = 41;
+
+% Dark-count correction
+INTEGRATION_TIME = 0.1;
+DARK_COUNT_RATE = 250;
+
+Dark_counts = ...
+    DARK_COUNT_RATE * ...
+    INTEGRATION_TIME;
+
+% Background/source detection
+sigmaLevel = 3;
+
+% Minimum number of pixels required for a source
+minimumSourcePixels = 2;
+
+% Connectivity
+%
+% 8 = horizontal + vertical + diagonal
+%
+connectivity = 8;
+
+% Interpolation
+interpolationMethod = 'natural';
+
+%% ============================================================
+% ============================================================
+% SELECT TWO CSV FILES
+% ============================================================
+% ============================================================
+
+[file1,path] = ...
+    uigetfile( ...
+    fullfile(folder,'*.csv'), ...
+    'Select First Photon Scan');
+
+if isequal(file1,0)
+
+    error('First CSV file not selected.');
+
+end
+
+[file2,~] = ...
+    uigetfile( ...
+    fullfile(folder,'*.csv'), ...
+    'Select Second Photon Scan');
+
+if isequal(file2,0)
+
+    error('Second CSV file not selected.');
+
+end
+
+fprintf('\n');
+fprintf('============================================\n');
+fprintf(' SELECTED FILES\n');
+fprintf('============================================\n');
+
+fprintf('Frame 1: %s\n',file1);
+fprintf('Frame 2: %s\n',file2);
+
+%% ============================================================
+% ============================================================
+% FRAME 1
+% ============================================================
+% ============================================================
+
+fprintf('\n');
+fprintf('============================================\n');
+fprintf(' PROCESSING FRAME 1\n');
+fprintf('============================================\n');
+
+%% ============================================================
+% READ CSV
+% ============================================================
+
+data1 = ...
+    readtable( ...
+    fullfile(path,file1));
+
+%% ============================================================
+% CHECK COLUMNS
+% ============================================================
+
+requiredColumns = ...
+    {'X','Y','Count'};
+
+for k = 1:length(requiredColumns)
+
+    if ~ismember( ...
+            requiredColumns{k}, ...
+            data1.Properties.VariableNames)
+
+        error( ...
+            'Frame 1 does not contain required column: %s', ...
+            requiredColumns{k});
+
+    end
+
+end
+
+%% ============================================================
+% EXTRACT DATA
+% ============================================================
+
+mirrorX1 = data1.X;
+mirrorY1 = data1.Y;
+Counts1 = data1.Count;
+
+%% ============================================================
+% REMOVE INVALID DATA
+% ============================================================
+
+valid1 = ...
+    isfinite(mirrorX1) & ...
+    isfinite(mirrorY1) & ...
+    isfinite(Counts1);
+
+mirrorX1 = mirrorX1(valid1);
+mirrorY1 = mirrorY1(valid1);
+Counts1 = Counts1(valid1);
+
+fprintf('Valid measurements: %d\n', ...
+    length(Counts1));
+
+%% ============================================================
+% CREATE 41 x 41 GRID
+% ============================================================
+
+x_min1 = min(mirrorX1);
+x_max1 = max(mirrorX1);
+
+y_min1 = min(mirrorY1);
+y_max1 = max(mirrorY1);
+
+x_grid1 = ...
+    linspace( ...
+    x_min1, ...
+    x_max1, ...
+    Nx);
+
+y_grid1 = ...
+    linspace( ...
+    y_min1, ...
+    y_max1, ...
+    Ny);
+
+%% ============================================================
+% GRID SPACING
+% ============================================================
+
+dx1 = mean(diff(x_grid1));
+dy1 = mean(diff(y_grid1));
+
+%% ============================================================
+% MAP CSV DATA TO GRID
+% ============================================================
+
+x_index1 = ...
+    round( ...
+    (mirrorX1 - x_min1) ./ dx1) + 1;
+
+y_index1 = ...
+    round( ...
+    (mirrorY1 - y_min1) ./ dy1) + 1;
+
+%% ============================================================
+% KEEP VALID GRID INDICES
+% ============================================================
+
+validGrid1 = ...
+    x_index1 >= 1 & ...
+    x_index1 <= Nx & ...
+    y_index1 >= 1 & ...
+    y_index1 <= Ny;
+
+x_index1 = x_index1(validGrid1);
+y_index1 = y_index1(validGrid1);
+Counts1 = Counts1(validGrid1);
+
+%% ============================================================
+% LINEAR INDICES
+% ============================================================
+
+linearIndex1 = ...
+    sub2ind( ...
+    [Ny,Nx], ...
+    y_index1, ...
+    x_index1);
+
+%% ============================================================
+% SUM COUNTS
+% ============================================================
+
+SPC_counts1 = ...
+    accumarray( ...
+    linearIndex1, ...
+    Counts1, ...
+    [Ny*Nx,1], ...
+    @sum, ...
+    0);
+
+%% ============================================================
+% COUNT VISITS
+% ============================================================
+
+SPC_visits1 = ...
+    accumarray( ...
+    linearIndex1, ...
+    1, ...
+    [Ny*Nx,1], ...
+    @sum, ...
+    0);
+
+%% ============================================================
+% RESHAPE
+% ============================================================
+
+SPC_counts1 = ...
+    reshape( ...
+    SPC_counts1, ...
+    Ny,Nx);
+
+SPC_visits1 = ...
+    reshape( ...
+    SPC_visits1, ...
+    Ny,Nx);
+
+%% ============================================================
+% AVERAGE COUNTS
+% ============================================================
+
+SPC_frame1 = ...
+    zeros(Ny,Nx);
+
+measuredMask1 = ...
+    SPC_visits1 > 0;
+
+SPC_frame1(measuredMask1) = ...
+    SPC_counts1(measuredMask1) ./ ...
+    SPC_visits1(measuredMask1);
+
+%% ============================================================
+% ROTATE BY 90 DEGREES
+% ============================================================
+
+SPC_rotated1 = ...
+    rot90(SPC_frame1);
+
+measuredMask_rotated1 = ...
+    rot90(measuredMask1);
+
+%% ============================================================
+% DISPLAY RAW FRAME 1
+% ============================================================
+
+figure
+
+imagesc(SPC_rotated1)
+
+axis image
+axis ij
+
+colormap(gray)
+colorbar
+
+title('Frame 1 — Raw 41 x 41 SPC Image')
+
+xlabel('X Pixel')
+ylabel('Y Pixel')
+
+%% ============================================================
+% DARK COUNT CORRECTION
+% ============================================================
+
+SPC_corrected1 = ...
+    SPC_rotated1 - ...
+    Dark_counts;
+
+SPC_corrected1( ...
+    SPC_corrected1 < 0) = 0;
+
+%% ============================================================
+% BACKGROUND ESTIMATION
+% ============================================================
+
+backgroundValues1 = ...
+    SPC_corrected1( ...
+    measuredMask_rotated1);
+
+backgroundMean1 = ...
+    mean(backgroundValues1);
+
+backgroundMedian1 = ...
+    median(backgroundValues1);
+
+backgroundSD1 = ...
+    std(backgroundValues1);
+
+%% ============================================================
+% BACKGROUND SUBTRACTION
+% ============================================================
+
+Photon_image1 = ...
+    SPC_corrected1 - ...
+    backgroundMedian1;
+
+Photon_image1( ...
+    Photon_image1 < 0) = 0;
+
+%% ============================================================
+% KEEP ONLY MEASURED POINTS
+% ============================================================
+
+Photon_image1( ...
+    ~measuredMask_rotated1) = NaN;
+
+%% ============================================================
+% FIND MEASURED PERIMETER
+% ============================================================
+
+[row1,col1] = ...
+    find(measuredMask_rotated1);
+
+if length(row1) >= 3
+
+    shp1 = ...
+        alphaShape( ...
+        col1, ...
+        row1, ...
+        Inf);
+
+    [Xindex1,Yindex1] = ...
+        meshgrid( ...
+        1:Nx, ...
+        1:Ny);
+
+    insidePerimeter1 = ...
+        inShape( ...
+        shp1, ...
+        Xindex1, ...
+        Yindex1);
+
+else
+
+    insidePerimeter1 = ...
+        measuredMask_rotated1;
+
+end
+
+%% ============================================================
+% INTERPOLATE FRAME 1
+% ============================================================
+
+X_measured1 = ...
+    x_grid1(col1);
+
+Y_measured1 = ...
+    y_grid1(row1);
+
+V_measured1 = ...
+    Photon_image1( ...
+    measuredMask_rotated1);
+
+X_measured1 = X_measured1(:);
+Y_measured1 = Y_measured1(:);
+V_measured1 = V_measured1(:);
+
+%% ============================================================
+% CREATE INTERPOLANT
+% ============================================================
+
+F1 = ...
+    scatteredInterpolant( ...
+    X_measured1, ...
+    Y_measured1, ...
+    V_measured1, ...
+    interpolationMethod, ...
+    'none');
+
+%% ============================================================
+% PHYSICAL GRID
+% ============================================================
+
+[Xphysical1,Yphysical1] = ...
+    meshgrid( ...
+    x_grid1, ...
+    y_grid1);
+
+%% ============================================================
+% INTERPOLATE
+% ============================================================
+
+Interpolated1 = ...
+    F1( ...
+    Xphysical1, ...
+    Yphysical1);
+
+%% ============================================================
+% KEEP ORIGINAL MEASUREMENTS EXACTLY
+% ============================================================
+
+Interpolated1( ...
+    measuredMask_rotated1) = ...
+    Photon_image1( ...
+    measuredMask_rotated1);
+
+%% ============================================================
+% REMOVE OUTSIDE PERIMETER
+% ============================================================
+
+Interpolated1( ...
+    ~insidePerimeter1) = NaN;
+
+%% ============================================================
+% DISPLAY FRAME 1
+% ============================================================
+
+figure
+
+imagesc(Interpolated1)
+
+axis image
+axis ij
+
+colormap(gray)
+colorbar
+
+title('Frame 1 — Interpolated + Background Corrected')
+
+xlabel('X Pixel')
+ylabel('Y Pixel')
+
+%% ============================================================
+% ============================================================
+% FRAME 2
+% ============================================================
+% ============================================================
+
+fprintf('\n');
+fprintf('============================================\n');
+fprintf(' PROCESSING FRAME 2\n');
+fprintf('============================================\n');
+
+%% ============================================================
+% READ CSV
+% ============================================================
+
+data2 = ...
+    readtable( ...
+    fullfile(path,file2));
+
+%% ============================================================
+% CHECK COLUMNS
+% ============================================================
+
+for k = 1:length(requiredColumns)
+
+    if ~ismember( ...
+            requiredColumns{k}, ...
+            data2.Properties.VariableNames)
+
+        error( ...
+            'Frame 2 does not contain required column: %s', ...
+            requiredColumns{k});
+
+    end
+
+end
+
+%% ============================================================
+% EXTRACT DATA
+% ============================================================
+
+mirrorX2 = data2.X;
+mirrorY2 = data2.Y;
+Counts2 = data2.Count;
+
+%% ============================================================
+% REMOVE INVALID DATA
+% ============================================================
+
+valid2 = ...
+    isfinite(mirrorX2) & ...
+    isfinite(mirrorY2) & ...
+    isfinite(Counts2);
+
+mirrorX2 = mirrorX2(valid2);
+mirrorY2 = mirrorY2(valid2);
+Counts2 = Counts2(valid2);
+
+fprintf('Valid measurements: %d\n', ...
+    length(Counts2));
+
+%% ============================================================
+% CREATE 41 x 41 GRID
+% ============================================================
+
+x_min2 = min(mirrorX2);
+x_max2 = max(mirrorX2);
+
+y_min2 = min(mirrorY2);
+y_max2 = max(mirrorY2);
+
+x_grid2 = ...
+    linspace( ...
+    x_min2, ...
+    x_max2, ...
+    Nx);
+
+y_grid2 = ...
+    linspace( ...
+    y_min2, ...
+    y_max2, ...
+    Ny);
+
+%% ============================================================
+% GRID SPACING
+% ============================================================
+
+dx2 = mean(diff(x_grid2));
+dy2 = mean(diff(y_grid2));
+
+%% ============================================================
+% MAP DATA TO GRID
+% ============================================================
+
+x_index2 = ...
+    round( ...
+    (mirrorX2 - x_min2) ./ dx2) + 1;
+
+y_index2 = ...
+    round( ...
+    (mirrorY2 - y_min2) ./ dy2) + 1;
+
+%% ============================================================
+% KEEP VALID GRID INDICES
+% ============================================================
+
+validGrid2 = ...
+    x_index2 >= 1 & ...
+    x_index2 <= Nx & ...
+    y_index2 >= 1 & ...
+    y_index2 <= Ny;
+
+x_index2 = x_index2(validGrid2);
+y_index2 = y_index2(validGrid2);
+Counts2 = Counts2(validGrid2);
+
+%% ============================================================
+% LINEAR INDICES
+% ============================================================
+
+linearIndex2 = ...
+    sub2ind( ...
+    [Ny,Nx], ...
+    y_index2, ...
+    x_index2);
+
+%% ============================================================
+% SUM COUNTS
+% ============================================================
+
+SPC_counts2 = ...
+    accumarray( ...
+    linearIndex2, ...
+    Counts2, ...
+    [Ny*Nx,1], ...
+    @sum, ...
+    0);
+
+%% ============================================================
+% COUNT VISITS
+% ============================================================
+
+SPC_visits2 = ...
+    accumarray( ...
+    linearIndex2, ...
+    1, ...
+    [Ny*Nx,1], ...
+    @sum, ...
+    0);
+
+%% ============================================================
+% RESHAPE
+% ============================================================
+
+SPC_counts2 = ...
+    reshape( ...
+    SPC_counts2, ...
+    Ny,Nx);
+
+SPC_visits2 = ...
+    reshape( ...
+    SPC_visits2, ...
+    Ny,Nx);
+
+%% ============================================================
+% AVERAGE COUNTS
+% ============================================================
+
+SPC_frame2 = ...
+    zeros(Ny,Nx);
+
+measuredMask2 = ...
+    SPC_visits2 > 0;
+
+SPC_frame2(measuredMask2) = ...
+    SPC_counts2(measuredMask2) ./ ...
+    SPC_visits2(measuredMask2);
+
+%% ============================================================
+% ROTATE BY 90 DEGREES
+% ============================================================
+
+SPC_rotated2 = ...
+    rot90(SPC_frame2);
+
+measuredMask_rotated2 = ...
+    rot90(measuredMask2);
+
+%% ============================================================
+% DISPLAY RAW FRAME 2
+% ============================================================
+
+figure
+
+imagesc(SPC_rotated2)
+
+axis image
+axis ij
+
+colormap(gray)
+colorbar
+
+title('Frame 2 — Raw 41 x 41 SPC Image')
+
+xlabel('X Pixel')
+ylabel('Y Pixel')
+
+%% ============================================================
+% DARK COUNT CORRECTION
+% ============================================================
+
+SPC_corrected2 = ...
+    SPC_rotated2 - ...
+    Dark_counts;
+
+SPC_corrected2( ...
+    SPC_corrected2 < 0) = 0;
+
+%% ============================================================
+% BACKGROUND ESTIMATION
+% ============================================================
+
+backgroundValues2 = ...
+    SPC_corrected2( ...
+    measuredMask_rotated2);
+
+backgroundMean2 = ...
+    mean(backgroundValues2);
+
+backgroundMedian2 = ...
+    median(backgroundValues2);
+
+backgroundSD2 = ...
+    std(backgroundValues2);
+
+%% ============================================================
+% BACKGROUND SUBTRACTION
+% ============================================================
+
+Photon_image2 = ...
+    SPC_corrected2 - ...
+    backgroundMedian2;
+
+Photon_image2( ...
+    Photon_image2 < 0) = 0;
+
+%% ============================================================
+% KEEP ONLY MEASURED POINTS
+% ============================================================
+
+Photon_image2( ...
+    ~measuredMask_rotated2) = NaN;
+
+%% ============================================================
+% FIND MEASURED PERIMETER
+% ============================================================
+
+[row2,col2] = ...
+    find(measuredMask_rotated2);
+
+if length(row2) >= 3
+
+    shp2 = ...
+        alphaShape( ...
+        col2, ...
+        row2, ...
+        Inf);
+
+    [Xindex2,Yindex2] = ...
+        meshgrid( ...
+        1:Nx, ...
+        1:Ny);
+
+    insidePerimeter2 = ...
+        inShape( ...
+        shp2, ...
+        Xindex2, ...
+        Yindex2);
+
+else
+
+    insidePerimeter2 = ...
+        measuredMask_rotated2;
+
+end
+
+%% ============================================================
+% INTERPOLATE FRAME 2
+% ============================================================
+
+X_measured2 = ...
+    x_grid2(col2);
+
+Y_measured2 = ...
+    y_grid2(row2);
+
+V_measured2 = ...
+    Photon_image2( ...
+    measuredMask_rotated2);
+
+X_measured2 = X_measured2(:);
+Y_measured2 = Y_measured2(:);
+V_measured2 = V_measured2(:);
+
+%% ============================================================
+% CREATE INTERPOLANT
+% ============================================================
+
+F2 = ...
+    scatteredInterpolant( ...
+    X_measured2, ...
+    Y_measured2, ...
+    V_measured2, ...
+    interpolationMethod, ...
+    'none');
+
+%% ============================================================
+% PHYSICAL GRID
+% ============================================================
+
+[Xphysical2,Yphysical2] = ...
+    meshgrid( ...
+    x_grid2, ...
+    y_grid2);
+
+%% ============================================================
+% INTERPOLATE
+% ============================================================
+
+Interpolated2 = ...
+    F2( ...
+    Xphysical2, ...
+    Yphysical2);
+
+%% ============================================================
+% KEEP ORIGINAL MEASUREMENTS EXACTLY
+% ============================================================
+
+Interpolated2( ...
+    measuredMask_rotated2) = ...
+    Photon_image2( ...
+    measuredMask_rotated2);
+
+%% ============================================================
+% REMOVE OUTSIDE PERIMETER
+% ============================================================
+
+Interpolated2( ...
+    ~insidePerimeter2) = NaN;
+
+%% ============================================================
+% DISPLAY FRAME 2
+% ============================================================
+
+figure
+
+imagesc(Interpolated2)
+
+axis image
+axis ij
+
+colormap(gray)
+colorbar
+
+title('Frame 2 — Interpolated + Background Corrected')
+
+xlabel('X Pixel')
+ylabel('Y Pixel')
+
+%% ============================================================
+% ============================================================
+% PREPARE FRAMES FOR REGISTRATION
+% ============================================================
+% ============================================================
+
+Frame1_forRegistration = ...
+    Interpolated1;
+
+Frame2_forRegistration = ...
+    Interpolated2;
+
+Frame1_forRegistration( ...
+    isnan(Frame1_forRegistration)) = 0;
+
+Frame2_forRegistration( ...
+    isnan(Frame2_forRegistration)) = 0;
+
+%% ============================================================
+% ============================================================
+% REGISTER FRAME 2 TO FRAME 1
+% ============================================================
+% ============================================================
+
+fprintf('\n');
+fprintf('Registering Frame 2 to Frame 1...\n');
+
+tform = ...
+    imregcorr( ...
+    Frame2_forRegistration, ...
+    Frame1_forRegistration, ...
+    'translation');
+
+%% ============================================================
+% APPLY TRANSFORMATION
+% ============================================================
+
+Frame2_registered = ...
+    imwarp( ...
+    Frame2_forRegistration, ...
+    tform, ...
+    'OutputView', ...
+    imref2d( ...
+    size(Frame1_forRegistration)));
+
+%% ============================================================
+% ============================================================
+% COMBINE TWO FRAMES
+% ============================================================
+% ============================================================
+
+Combined = ...
+    (Frame1_forRegistration + ...
+     Frame2_registered) ./ 2;
+
+%% ============================================================
+% DIFFERENCE IMAGE
+% ============================================================
+
+Difference = ...
+    abs( ...
+    Frame1_forRegistration - ...
+    Frame2_registered);
+
+%% ============================================================
+% DISPLAY CORRELATION RESULTS
+% ============================================================
+
+figure( ...
+    'Name', ...
+    'Frame Correlation Results', ...
+    'Color', ...
+    'w');
+
+%% FRAME 1
+
+subplot(2,2,1)
+
+imagesc(Frame1_forRegistration)
+
+axis image
+axis ij
+
+colormap(gray)
+colorbar
+
+title('Frame 1')
+
+%% FRAME 2
+
+subplot(2,2,2)
+
+imagesc(Frame2_registered)
+
+axis image
+axis ij
+
+colormap(gray)
+colorbar
+
+title('Frame 2 Registered')
+
+%% COMBINED
+
+subplot(2,2,3)
+
+imagesc(Combined)
+
+axis image
+axis ij
+
+colormap(gray)
+colorbar
+
+title('Combined Image')
+
+%% DIFFERENCE
+
+subplot(2,2,4)
+
+imagesc(Difference)
+
+axis image
+axis ij
+
+colormap(gray)
+colorbar
+
+title('Difference Image')
+
+%% ============================================================
+% ============================================================
+% CONTRAST ENHANCED COMBINED IMAGE
+% ============================================================
+% ============================================================
+
+figure
+
+imagesc( ...
+    imadjust( ...
+    mat2gray(Combined)));
+
+axis image
+axis ij
+
+colormap(gray)
+colorbar
+
+title('Contrast Enhanced Combined Image')
+
+xlabel('X Pixel')
+ylabel('Y Pixel')
+
+%% ============================================================
+% ============================================================
+% SOURCE DETECTION
+% ============================================================
+% ============================================================
+%
+% Source detection is performed AFTER:
+%
+%   1. Frame reconstruction
+%   2. Dark correction
+%   3. Background correction
+%   4. Interpolation
+%   5. Frame registration
+%   6. Frame averaging
+%
+% This means centroid detection works on the improved
+% two-frame image.
+%
+% ============================================================
+
+fprintf('\n');
+fprintf('============================================\n');
+fprintf(' MULTIPLE SOURCE DETECTION\n');
+fprintf('============================================\n');
+
+%% ============================================================
+% CREATE SOURCE MASK
+% ============================================================
+%
+% Estimate the background statistics from the combined image.
+%
+% Pixels above:
+%
+%       background + sigmaLevel * SD
+%
+% are considered source pixels.
+%
+% ============================================================
+
+% Use only non-zero pixels for the statistics
+% because areas outside the measured scan were set to zero.
+
+backgroundPixels = ...
+    Combined( ...
+    isfinite(Combined) & ...
+    Combined > 0);
+
+%% ============================================================
+% BACKGROUND STATISTICS
+% ============================================================
+
+combinedBackgroundMean = ...
+    mean(backgroundPixels);
+
+combinedBackgroundMedian = ...
+    median(backgroundPixels);
+
+combinedBackgroundSD = ...
+    std(backgroundPixels);
+
+%% ============================================================
+% SOURCE THRESHOLD
+% ============================================================
+
+threshold = ...
+    combinedBackgroundMedian + ...
+    sigmaLevel * ...
+    combinedBackgroundSD;
+
+fprintf('\n');
+
+fprintf('Combined background mean   : %.3f\n', ...
+    combinedBackgroundMean);
+
+fprintf('Combined background median : %.3f\n', ...
+    combinedBackgroundMedian);
+
+fprintf('Combined background SD     : %.3f\n', ...
+    combinedBackgroundSD);
+
+fprintf('Sigma level                : %.2f\n', ...
+    sigmaLevel);
+
+fprintf('Detection threshold        : %.3f\n', ...
+    threshold);
+
+%% ============================================================
+% CREATE SOURCE MASK
+% ============================================================
+
+sourceMask = ...
+    Combined > threshold;
+
+%% ============================================================
+% DISPLAY SOURCE MASK
+% ============================================================
+
+figure
+
+imagesc(sourceMask)
+
+axis image
+axis ij
+
+colormap(gray)
+colorbar
+
+title(sprintf( ...
+    'Detected Source Pixels — %d Sigma', ...
+    sigmaLevel));
+
+xlabel('X Pixel')
+ylabel('Y Pixel')
+
+%% ============================================================
+% ============================================================
+% CONNECTED COMPONENT ANALYSIS
+% ============================================================
+% ============================================================
+
+CC = ...
+    bwconncomp( ...
+    sourceMask, ...
+    connectivity);
+
+fprintf('\nInitial connected regions: %d\n', ...
+    CC.NumObjects);
+
+%% ============================================================
+% REMOVE SMALL REGIONS
+% ============================================================
+
+cleanMask = ...
+    false(size(sourceMask));
+
+for k = 1:CC.NumObjects
+
+    numberOfPixels = ...
+        numel( ...
+        CC.PixelIdxList{k});
+
+    if numberOfPixels >= ...
+            minimumSourcePixels
+
+        cleanMask( ...
+            CC.PixelIdxList{k}) = true;
+
+    end
+
+end
+
+%% ============================================================
+% FIND FINAL SOURCE REGIONS
+% ============================================================
+
+CC = ...
+    bwconncomp( ...
+    cleanMask, ...
+    connectivity);
+
+numSources = ...
+    CC.NumObjects;
+
+fprintf('Final sources detected: %d\n', ...
+    numSources);
+
+%% ============================================================
+% DISPLAY CLEAN SOURCE MASK
+% ============================================================
+
+figure
+
+imagesc(cleanMask)
+
+axis image
+axis ij
+
+colormap(gray)
+colorbar
+
+title(sprintf( ...
+    'Final Source Regions — %d Sources', ...
+    numSources));
+
+xlabel('X Pixel')
+ylabel('Y Pixel')
+
+%% ============================================================
+% ============================================================
+% ALLOCATE CENTROID RESULTS
+% ============================================================
+% ============================================================
+
+centroidX = ...
+    zeros(numSources,1);
+
+centroidY = ...
+    zeros(numSources,1);
+
+centroidXPhysical = ...
+    zeros(numSources,1);
+
+centroidYPhysical = ...
+    zeros(numSources,1);
+
+peakCounts = ...
+    zeros(numSources,1);
+
+totalCounts = ...
+    zeros(numSources,1);
+
+sourcePixelCount = ...
+    zeros(numSources,1);
+
+%% ============================================================
+% ============================================================
+% PHOTON-WEIGHTED CENTROIDS
+% ============================================================
+%
+% For each detected source:
+%
+%       Xc = sum(Xi * Ci) / sum(Ci)
+%
+%       Yc = sum(Yi * Ci) / sum(Ci)
+%
+% where Ci is the background-corrected photon count.
+%
+% ============================================================
+
+for k = 1:numSources
+
+    %% --------------------------------------------------------
+    % SOURCE PIXELS
+    % --------------------------------------------------------
+
+    pixelIndices = ...
+        CC.PixelIdxList{k};
+
+    %% --------------------------------------------------------
+    % CONVERT TO ROW/COLUMN
+    % --------------------------------------------------------
+
+    [rows,cols] = ...
+        ind2sub( ...
+        [Ny,Nx], ...
+        pixelIndices);
+
+    %% --------------------------------------------------------
+    % GET SOURCE COUNTS
+    % --------------------------------------------------------
+
+    counts = ...
+        Combined(pixelIndices);
+
+    %% --------------------------------------------------------
+    % REMOVE INVALID VALUES
+    % --------------------------------------------------------
+
+    validSource = ...
+        isfinite(counts);
+
+    rows = ...
+        rows(validSource);
+
+    cols = ...
+        cols(validSource);
+
+    counts = ...
+        counts(validSource);
+
+    %% --------------------------------------------------------
+    % NUMBER OF SOURCE PIXELS
+    % --------------------------------------------------------
+
+    sourcePixelCount(k) = ...
+        length(counts);
+
+    %% --------------------------------------------------------
+    % TOTAL COUNTS
+    % --------------------------------------------------------
+
+    totalCounts(k) = ...
+        sum(counts);
+
+    %% --------------------------------------------------------
+    % PEAK COUNT
+    % --------------------------------------------------------
+
+    if ~isempty(counts)
+
+        peakCounts(k) = ...
+            max(counts);
+
+    else
+
+        peakCounts(k) = 0;
+
+    end
+
+    %% --------------------------------------------------------
+    % PHOTON-WEIGHTED CENTROID
+    % --------------------------------------------------------
+
+    if totalCounts(k) > 0
+
+        centroidX(k) = ...
+            sum( ...
+            cols .* counts) ./ ...
+            totalCounts(k);
+
+        centroidY(k) = ...
+            sum( ...
+            rows .* counts) ./ ...
+            totalCounts(k);
+
+    else
+
+        centroidX(k) = ...
+            mean(cols);
+
+        centroidY(k) = ...
+            mean(rows);
+
+    end
+
+end
+
+%% ============================================================
+% ============================================================
+% CONVERT ROTATED DISPLAY COORDINATES BACK TO ORIGINAL
+% PIXEL COORDINATES
+% ============================================================
+%
+% Because the image was rotated using:
+%
+%       rot90()
+%
+% the relationship is:
+%
+%       Display X = Original Y
+%
+%       Display Y = Nx - Original X + 1
+%
+% Therefore:
+%
+%       Original X = Nx - Display Y + 1
+%
+%       Original Y = Display X
+%
+% ============================================================
+
+originalXPixel = ...
+    Nx - centroidY + 1;
+
+originalYPixel = ...
+    centroidX;
+
+%% ============================================================
+% ============================================================
+% CONVERT TO PHYSICAL MIRROR COORDINATES
+% ============================================================
+%
+% Frame 1 is used as the reference physical grid.
+%
+% ============================================================
+
+centroidXPhysical = ...
+    interp1( ...
+    1:Nx, ...
+    x_grid1, ...
+    originalXPixel);
+
+centroidYPhysical = ...
+    interp1( ...
+    1:Ny, ...
+    y_grid1, ...
+    originalYPixel);
+
+%% ============================================================
+% ============================================================
+% DISPLAY CENTROIDS
+% ============================================================
+% ============================================================
+
+figure
+
+imagesc(Combined)
+
+axis image
+axis ij
+
+colormap(gray)
+colorbar
+
+hold on
+
+for k = 1:numSources
+
+    %% CENTROID
+
+    plot( ...
+        centroidX(k), ...
+        centroidY(k), ...
+        'r+', ...
+        'MarkerSize',14, ...
+        'LineWidth',2);
+
+    %% SOURCE NUMBER
+
+    text( ...
+        centroidX(k) + 0.7, ...
+        centroidY(k), ...
+        sprintf('%d',k), ...
+        'Color','r', ...
+        'FontSize',12, ...
+        'FontWeight','bold');
+
+end
+
+title(sprintf( ...
+    'Multiple Source Centroids — %d Sources', ...
+    numSources));
+
+xlabel('Displayed X Pixel')
+ylabel('Displayed Y Pixel')
+
+hold off
+
+%% ============================================================
+% ============================================================
+% CENTROID POINT IMAGE
+% ============================================================
+% ============================================================
+
+centroidImage = ...
+    zeros(Ny,Nx);
+
+for k = 1:numSources
+
+    x = ...
+        round(centroidX(k));
+
+    y = ...
+        round(centroidY(k));
+
+    if x >= 1 && x <= Nx && ...
+       y >= 1 && y <= Ny
+
+        centroidImage(y,x) = ...
+            peakCounts(k);
+
+    end
+
+end
+
+%% ============================================================
+% DISPLAY CENTROID POINT IMAGE
+% ============================================================
+
+figure
+
+imagesc(centroidImage)
+
+axis image
+axis ij
+
+colormap(gray)
+colorbar
+
+hold on
+
+for k = 1:numSources
+
+    plot( ...
+        centroidX(k), ...
+        centroidY(k), ...
+        'r+', ...
+        'MarkerSize',14, ...
+        'LineWidth',2);
+
+end
+
+title('Sources Represented by Centroid Points')
+
+xlabel('Displayed X Pixel')
+ylabel('Displayed Y Pixel')
+
+hold off
+
+%% ============================================================
+% ============================================================
+% PRINT CENTROID RESULTS
+% ============================================================
+% ============================================================
+
+fprintf('\n');
+fprintf('============================================\n');
+fprintf(' CENTROID RESULTS\n');
+fprintf('============================================\n');
+
+fprintf('\n');
+
+fprintf([ ...
+    'Source   Display X   Display Y   ' ...
+    'Original X   Original Y   ' ...
+    'Physical X      Physical Y      ' ...
+    'Peak       Total      Pixels\n']);
+
+fprintf([ ...
+    '--------------------------------------------------------------------------------' ...
+    '------------\n']);
+
+for k = 1:numSources
+
+    fprintf( ...
+        ['%3d      %8.3f    %8.3f      ' ...
+         '%8.3f    %8.3f    ' ...
+         '%11.6f   %11.6f   ' ...
+         '%9.2f   %10.2f    %4d\n'], ...
+        k, ...
+        centroidX(k), ...
+        centroidY(k), ...
+        originalXPixel(k), ...
+        originalYPixel(k), ...
+        centroidXPhysical(k), ...
+        centroidYPhysical(k), ...
+        peakCounts(k), ...
+        totalCounts(k), ...
+        sourcePixelCount(k));
+
+end
+
+%% ============================================================
+% ============================================================
+% FINAL INFORMATION
+% ============================================================
+% ============================================================
+
+fprintf('\n');
+fprintf('============================================\n');
+fprintf(' FINAL RECONSTRUCTION INFORMATION\n');
+fprintf('============================================\n');
+
+fprintf('\n');
+
+fprintf('Frame 1:\n');
+fprintf('  File       : %s\n',file1);
+fprintf('  Grid       : %d x %d\n',Nx,Ny);
+fprintf('  Background : %.3f\n',backgroundMedian1);
+fprintf('  Background SD : %.3f\n',backgroundSD1);
+
+fprintf('\n');
+
+fprintf('Frame 2:\n');
+fprintf('  File       : %s\n',file2);
+fprintf('  Grid       : %d x %d\n',Nx,Ny);
+fprintf('  Background : %.3f\n',backgroundMedian2);
+fprintf('  Background SD : %.3f\n',backgroundSD2);
+
+fprintf('\n');
+
+fprintf('Correlation:\n');
+fprintf('  Frame 2 registered to Frame 1.\n');
+fprintf('  Two frames averaged together.\n');
+
+fprintf('\n');
+
+fprintf('Source detection:\n');
+fprintf('  Sigma threshold : %.2f\n',sigmaLevel);
+fprintf('  Connectivity    : %d\n',connectivity);
+fprintf('  Minimum pixels   : %d\n',minimumSourcePixels);
+fprintf('  Sources detected : %d\n',numSources);
+
+fprintf('\n');
+
+fprintf('Dark count correction:\n');
+fprintf('  Integration time : %.3f s\n', ...
+    INTEGRATION_TIME);
+
+fprintf('  Dark count rate  : %.3f counts/s\n', ...
+    DARK_COUNT_RATE);
+
+fprintf('  Dark counts      : %.3f counts/frame\n', ...
+    Dark_counts);
+
+fprintf('\n');
+
+fprintf('Interpolation:\n');
+fprintf('  Method : %s\n', ...
+    interpolationMethod);
+
+fprintf('  Performed inside measured scan perimeter.\n');
+
+fprintf('\n');
+
+fprintf('============================================\n');
+
+%% ============================================================
+% FINISH
+% ============================================================
+
+elapsedTime = toc;
+
+fprintf('\n');
+fprintf('Total processing time: %.3f seconds\n', ...
+    elapsedTime);
+
+fprintf('\n');
+fprintf('Processing complete.\n');
