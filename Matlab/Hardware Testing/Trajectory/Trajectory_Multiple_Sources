@@ -1,0 +1,1397 @@
+%% ============================================================
+% SINGLE PHOTON CAMERA
+%
+% FAST MULTI-FRAME SOURCE DETECTION + CENTROID TRACKING
+%
+% ANY NUMBER OF CSV FRAMES
+%
+% CSV
+%   |
+%   +--> COMMON 41 x 41 GRID
+%   |
+%   +--> 90 DEGREE ROTATION
+%   |
+%   +--> FRAME-BY-FRAME THRESHOLD ESTIMATION
+%   |
+%   +--> SOURCE DETECTION
+%   |
+%   +--> CONNECTED SOURCE REGIONS
+%   |
+%   +--> PHOTON-WEIGHTED CENTROIDS
+%   |
+%   +--> SOURCE TRACKING
+%   |
+%   +--> TRAJECTORY
+%
+% IMPORTANT:
+%
+% NO ASSUMED DARK COUNT
+% NO ASSUMED BACKGROUND COUNT
+% NO FRAME COMBINING
+% NO FRAME REGISTRATION
+% NO RICHARDSON-LUCY
+% NO ALPHA SHAPE
+% NO SCATTERED INTERPOLANT
+%
+% Common reconstruction grid:
+%
+%       41 x 41
+%
+% ============================================================
+
+clear;
+clc;
+close all;
+
+tic
+
+%% ============================================================
+% FOLDER
+% ============================================================
+
+folder = ...
+    '\\userfs\bh1308\w2k\Desktop\Single Photon Camera\CSV\Testing';
+
+
+%% ============================================================
+% PARAMETERS
+% ============================================================
+
+% Common reconstruction grid
+Nx = 41;
+Ny = 41;
+
+% ------------------------------------------------------------
+% Source detection
+% ------------------------------------------------------------
+
+sigmaLevel = 3;
+
+% Minimum number of connected pixels required
+minimumSourcePixels = 3;
+
+% Connectivity
+%
+% 8 = horizontal + vertical + diagonal
+%
+connectivity = 8;
+
+% ------------------------------------------------------------
+% Tracking
+% ------------------------------------------------------------
+
+% Maximum distance that a source can move between frames
+%
+% This is in 41 x 41 pixel coordinates.
+%
+maxTrackingDistance = 6;
+
+% ------------------------------------------------------------
+% Optional fast interpolation
+% ------------------------------------------------------------
+
+% Set to false for maximum speed.
+%
+% If your scan already contains essentially every grid position,
+% this should remain FALSE.
+%
+useInterpolation = false;
+
+
+%% ============================================================
+% SELECT ANY NUMBER OF CSV FILES
+% ============================================================
+
+[filenames, pathname] = ...
+    uigetfile( ...
+    fullfile(folder,'*.csv'), ...
+    'Select Photon Scan Frames', ...
+    'MultiSelect','on');
+
+if isequal(filenames,0)
+
+    error('No CSV files selected.');
+
+end
+
+
+% MATLAB returns a character array when only one file is selected.
+
+if ischar(filenames)
+
+    filenames = {filenames};
+
+end
+
+
+Nframes = length(filenames);
+
+
+fprintf('\n');
+fprintf('============================================\n');
+fprintf(' MULTI-FRAME SPC PROCESSING\n');
+fprintf('============================================\n');
+
+fprintf('Number of frames selected: %d\n',Nframes);
+
+fprintf('Common grid: %d x %d\n',Nx,Ny);
+
+
+%% ============================================================
+% STORAGE
+% ============================================================
+
+Photon_images = cell(Nframes,1);
+
+sourceMasks = cell(Nframes,1);
+
+centroidsX = cell(Nframes,1);
+centroidsY = cell(Nframes,1);
+
+physicalX = cell(Nframes,1);
+physicalY = cell(Nframes,1);
+
+peakCounts = cell(Nframes,1);
+totalCounts = cell(Nframes,1);
+
+numSourcesPerFrame = zeros(Nframes,1);
+
+thresholds = zeros(Nframes,1);
+backgroundMedians = zeros(Nframes,1);
+backgroundSDs = zeros(Nframes,1);
+
+x_grids = cell(Nframes,1);
+y_grids = cell(Nframes,1);
+
+
+%% ============================================================
+% PROCESS EACH FRAME
+% ============================================================
+
+for frameNumber = 1:Nframes
+
+    fprintf('\n');
+    fprintf('============================================\n');
+    fprintf('FRAME %d / %d\n', ...
+        frameNumber,Nframes);
+    fprintf('============================================\n');
+
+    fprintf('File: %s\n', ...
+        filenames{frameNumber});
+
+
+    %% ========================================================
+    % READ CSV
+    % ========================================================
+
+    data = readtable( ...
+        fullfile(pathname, ...
+        filenames{frameNumber}));
+
+
+    %% ========================================================
+    % CHECK REQUIRED COLUMNS
+    % ========================================================
+
+    requiredColumns = {'X','Y','Count'};
+
+    for c = 1:length(requiredColumns)
+
+        if ~ismember( ...
+                requiredColumns{c}, ...
+                data.Properties.VariableNames)
+
+            error( ...
+                'CSV %s does not contain column %s.', ...
+                filenames{frameNumber}, ...
+                requiredColumns{c});
+
+        end
+
+    end
+
+
+    %% ========================================================
+    % EXTRACT DATA
+    % ========================================================
+
+    mirrorX = data.X;
+    mirrorY = data.Y;
+    Counts = data.Count;
+
+
+    %% ========================================================
+    % REMOVE INVALID DATA
+    % ========================================================
+
+    valid = ...
+        isfinite(mirrorX) & ...
+        isfinite(mirrorY) & ...
+        isfinite(Counts);
+
+    mirrorX = mirrorX(valid);
+    mirrorY = mirrorY(valid);
+    Counts = Counts(valid);
+
+
+    %% ========================================================
+    % CREATE FRAME-SPECIFIC 41 x 41 GRID
+    % ========================================================
+
+    x_min = min(mirrorX);
+    x_max = max(mirrorX);
+
+    y_min = min(mirrorY);
+    y_max = max(mirrorY);
+
+    x_grid = ...
+        linspace( ...
+        x_min, ...
+        x_max, ...
+        Nx);
+
+    y_grid = ...
+        linspace( ...
+        y_min, ...
+        y_max, ...
+        Ny);
+
+
+    x_grids{frameNumber} = x_grid;
+    y_grids{frameNumber} = y_grid;
+
+
+    %% ========================================================
+    % GRID SPACING
+    % ========================================================
+
+    dx = mean(diff(x_grid));
+    dy = mean(diff(y_grid));
+
+
+    %% ========================================================
+    % MAP MEASUREMENTS TO GRID
+    %
+    % This replaces the slower repeated nearest-neighbour
+    % searches.
+    %
+    % ========================================================
+
+    x_index = ...
+        round( ...
+        (mirrorX - x_min) ./ dx) + 1;
+
+    y_index = ...
+        round( ...
+        (mirrorY - y_min) ./ dy) + 1;
+
+
+    %% ========================================================
+    % KEEP VALID GRID POSITIONS
+    % ========================================================
+
+    validGrid = ...
+        x_index >= 1 & ...
+        x_index <= Nx & ...
+        y_index >= 1 & ...
+        y_index <= Ny;
+
+    x_index = x_index(validGrid);
+    y_index = y_index(validGrid);
+    Counts = Counts(validGrid);
+
+
+    %% ========================================================
+    % LINEAR INDICES
+    % ========================================================
+
+    linearIndex = ...
+        sub2ind( ...
+        [Ny,Nx], ...
+        y_index, ...
+        x_index);
+
+
+    %% ========================================================
+    % SUM COUNTS
+    % ========================================================
+
+    SPC_counts = ...
+        accumarray( ...
+        linearIndex, ...
+        Counts, ...
+        [Ny*Nx,1], ...
+        @sum, ...
+        0);
+
+
+    %% ========================================================
+    % COUNT VISITS
+    % ========================================================
+
+    SPC_visits = ...
+        accumarray( ...
+        linearIndex, ...
+        1, ...
+        [Ny*Nx,1], ...
+        @sum, ...
+        0);
+
+
+    %% ========================================================
+    % RESHAPE
+    % ========================================================
+
+    SPC_counts = ...
+        reshape( ...
+        SPC_counts, ...
+        Ny,Nx);
+
+    SPC_visits = ...
+        reshape( ...
+        SPC_visits, ...
+        Ny,Nx);
+
+
+    %% ========================================================
+    % AVERAGE COUNTS
+    % ========================================================
+
+    SPC_frame = ...
+        zeros(Ny,Nx);
+
+    measuredMask = ...
+        SPC_visits > 0;
+
+    SPC_frame(measuredMask) = ...
+        SPC_counts(measuredMask) ./ ...
+        SPC_visits(measuredMask);
+
+
+    %% ========================================================
+    % ROTATE IMAGE
+    % ========================================================
+
+    SPC_rotated = ...
+        rot90(SPC_frame);
+
+    measuredMask_rotated = ...
+        rot90(measuredMask);
+
+
+    %% ========================================================
+    % OPTIONAL INTERPOLATION
+    % ========================================================
+    %
+    % Disabled by default for speed.
+    %
+    % If the grid contains missing pixels and interpolation is
+    % required, a fast nearest-neighbour interpolation is used.
+    %
+    % ========================================================
+
+    if useInterpolation
+
+        [Xgrid,Ygrid] = ...
+            meshgrid( ...
+            1:Nx, ...
+            1:Ny);
+
+        measuredX = Xgrid(measuredMask_rotated);
+        measuredY = Ygrid(measuredMask_rotated);
+
+        measuredValues = ...
+            SPC_rotated(measuredMask_rotated);
+
+        missingMask = ...
+            ~measuredMask_rotated;
+
+        if any(missingMask(:))
+
+            missingX = Xgrid(missingMask);
+            missingY = Ygrid(missingMask);
+
+            % Fast nearest-neighbour interpolation
+
+            interpolatedValues = ...
+                griddata( ...
+                measuredX, ...
+                measuredY, ...
+                measuredValues, ...
+                missingX, ...
+                missingY, ...
+                'nearest');
+
+            SPC_rotated(missingMask) = ...
+                interpolatedValues;
+
+        end
+
+    end
+
+
+    %% ========================================================
+    % ========================================================
+    % DATA-DRIVEN BACKGROUND ESTIMATION
+    % ========================================================
+    %
+    % NO fixed background value is assumed.
+    %
+    % NO fixed dark count value is assumed.
+    %
+    % The statistics are calculated from the current frame.
+    %
+    % Median is used because it is less sensitive to bright
+    % sources than the mean.
+    %
+    % ========================================================
+
+    measuredValues = ...
+        SPC_rotated(measuredMask_rotated);
+
+    measuredValues = ...
+        measuredValues(isfinite(measuredValues));
+
+
+    if isempty(measuredValues)
+
+        warning('No valid measurements in frame %d.', ...
+            frameNumber);
+
+        continue
+
+    end
+
+
+    %% ========================================================
+    % BACKGROUND MEDIAN
+    % ========================================================
+
+    backgroundMedian = ...
+        median(measuredValues);
+
+
+    %% ========================================================
+    % ROBUST STANDARD DEVIATION
+    % ========================================================
+    %
+    % MAD is used instead of normal std().
+    %
+    % This prevents bright sources from excessively increasing
+    % the detection threshold.
+    %
+    % ========================================================
+
+    MAD = ...
+        median( ...
+        abs(measuredValues - ...
+        backgroundMedian));
+
+    robustSD = ...
+        1.4826 * MAD;
+
+
+    %% ========================================================
+    % FALLBACK IF ROBUST SD IS ZERO
+    % ========================================================
+
+    if robustSD == 0
+
+        robustSD = ...
+            std(measuredValues);
+
+    end
+
+
+    %% ========================================================
+    % SOURCE DETECTION THRESHOLD
+    % ========================================================
+
+    threshold = ...
+        backgroundMedian + ...
+        sigmaLevel * robustSD;
+
+
+    thresholds(frameNumber) = ...
+        threshold;
+
+    backgroundMedians(frameNumber) = ...
+        backgroundMedian;
+
+    backgroundSDs(frameNumber) = ...
+        robustSD;
+
+
+    %% ========================================================
+    % BACKGROUND CORRECTION
+    %
+    % Only the estimated frame background is removed.
+    %
+    % No assumed dark-count correction is applied.
+    %
+    % ========================================================
+
+    Photon_image = ...
+        SPC_rotated - ...
+        backgroundMedian;
+
+    Photon_image( ...
+        Photon_image < 0) = 0;
+
+
+    %% ========================================================
+    % KEEP ONLY MEASURED REGION
+    % ========================================================
+
+    Photon_image( ...
+        ~measuredMask_rotated) = NaN;
+
+
+    Photon_images{frameNumber} = ...
+        Photon_image;
+
+
+    %% ========================================================
+    % SOURCE MASK
+    % ========================================================
+
+    sourceMask = ...
+        SPC_rotated > threshold;
+
+    sourceMask = ...
+        sourceMask & ...
+        measuredMask_rotated;
+
+
+    %% ========================================================
+    % CONNECTED COMPONENTS
+    % ========================================================
+
+    CC = ...
+        bwconncomp( ...
+        sourceMask, ...
+        connectivity);
+
+
+    %% ========================================================
+    % REMOVE SMALL REGIONS
+    % ========================================================
+
+    cleanMask = ...
+        false(size(sourceMask));
+
+
+    for k = 1:CC.NumObjects
+
+        if numel(CC.PixelIdxList{k}) >= ...
+                minimumSourcePixels
+
+            cleanMask( ...
+                CC.PixelIdxList{k}) = true;
+
+        end
+
+    end
+
+
+    %% ========================================================
+    % FINAL CONNECTED COMPONENTS
+    % ========================================================
+
+    CC = ...
+        bwconncomp( ...
+        cleanMask, ...
+        connectivity);
+
+
+    numSources = ...
+        CC.NumObjects;
+
+    numSourcesPerFrame(frameNumber) = ...
+        numSources;
+
+
+    sourceMasks{frameNumber} = ...
+        cleanMask;
+
+
+    fprintf('Background median : %.3f\n', ...
+        backgroundMedian);
+
+    fprintf('Background SD     : %.3f\n', ...
+        robustSD);
+
+    fprintf('Detection threshold: %.3f\n', ...
+        threshold);
+
+    fprintf('Sources detected  : %d\n', ...
+        numSources);
+
+
+    %% ========================================================
+    % ALLOCATE CENTROIDS
+    % ========================================================
+
+    frameCentroidX = ...
+        zeros(numSources,1);
+
+    frameCentroidY = ...
+        zeros(numSources,1);
+
+    framePhysicalX = ...
+        zeros(numSources,1);
+
+    framePhysicalY = ...
+        zeros(numSources,1);
+
+    framePeakCounts = ...
+        zeros(numSources,1);
+
+    frameTotalCounts = ...
+        zeros(numSources,1);
+
+
+    %% ========================================================
+    % CALCULATE SOURCE CENTROIDS
+    % ========================================================
+
+    for sourceNumber = 1:numSources
+
+        pixelIndices = ...
+            CC.PixelIdxList{sourceNumber};
+
+
+        %% ----------------------------------------------------
+        % PIXEL COORDINATES
+        % ----------------------------------------------------
+
+        [rows,cols] = ...
+            ind2sub( ...
+            [Ny,Nx], ...
+            pixelIndices);
+
+
+        %% ----------------------------------------------------
+        % SOURCE INTENSITIES
+        % ----------------------------------------------------
+
+        counts = ...
+            Photon_image(pixelIndices);
+
+        validSource = ...
+            isfinite(counts);
+
+        rows = rows(validSource);
+        cols = cols(validSource);
+        counts = counts(validSource);
+
+
+        if isempty(counts)
+
+            continue
+
+        end
+
+
+        %% ----------------------------------------------------
+        % TOTAL COUNTS
+        % ----------------------------------------------------
+
+        total = ...
+            sum(counts);
+
+
+        frameTotalCounts(sourceNumber) = ...
+            total;
+
+
+        %% ----------------------------------------------------
+        % PEAK
+        % ----------------------------------------------------
+
+        framePeakCounts(sourceNumber) = ...
+            max(counts);
+
+
+        %% ----------------------------------------------------
+        % PHOTON-WEIGHTED CENTROID
+        % ----------------------------------------------------
+
+        if total > 0
+
+            frameCentroidX(sourceNumber) = ...
+                sum(cols .* counts) / total;
+
+            frameCentroidY(sourceNumber) = ...
+                sum(rows .* counts) / total;
+
+        else
+
+            frameCentroidX(sourceNumber) = ...
+                mean(cols);
+
+            frameCentroidY(sourceNumber) = ...
+                mean(rows);
+
+        end
+
+
+        %% ----------------------------------------------------
+        % CONVERT ROTATED PIXEL TO ORIGINAL GRID PIXEL
+        % ----------------------------------------------------
+
+        originalX = ...
+            Nx - ...
+            frameCentroidY(sourceNumber) + 1;
+
+        originalY = ...
+            frameCentroidX(sourceNumber);
+
+
+        %% ----------------------------------------------------
+        % CONVERT TO PHYSICAL MIRROR POSITION
+        % ----------------------------------------------------
+
+        framePhysicalX(sourceNumber) = ...
+            interp1( ...
+            1:Nx, ...
+            x_grid, ...
+            originalX);
+
+        framePhysicalY(sourceNumber) = ...
+            interp1( ...
+            1:Ny, ...
+            y_grid, ...
+            originalY);
+
+    end
+
+
+    %% ========================================================
+    % STORE RESULTS
+    % ========================================================
+
+    centroidsX{frameNumber} = ...
+        frameCentroidX;
+
+    centroidsY{frameNumber} = ...
+        frameCentroidY;
+
+    physicalX{frameNumber} = ...
+        framePhysicalX;
+
+    physicalY{frameNumber} = ...
+        framePhysicalY;
+
+    peakCounts{frameNumber} = ...
+        framePeakCounts;
+
+    totalCounts{frameNumber} = ...
+        frameTotalCounts;
+
+
+    %% ========================================================
+    % DISPLAY FRAME
+    % ========================================================
+
+    figure( ...
+        'Name', ...
+        sprintf('Frame %d',frameNumber), ...
+        'NumberTitle','off');
+
+    imagesc(Photon_image);
+
+    axis image;
+    axis ij;
+
+    colormap(gray);
+    colorbar;
+
+    hold on;
+
+
+    %% ========================================================
+    % DISPLAY EVERY SOURCE CENTROID
+    % ========================================================
+
+    for sourceNumber = 1:numSources
+
+        plot( ...
+            frameCentroidX(sourceNumber), ...
+            frameCentroidY(sourceNumber), ...
+            'r+', ...
+            'MarkerSize',14, ...
+            'LineWidth',2);
+
+
+        text( ...
+            frameCentroidX(sourceNumber) + 0.6, ...
+            frameCentroidY(sourceNumber), ...
+            sprintf('%d',sourceNumber), ...
+            'Color','r', ...
+            'FontSize',11, ...
+            'FontWeight','bold');
+
+    end
+
+
+    title(sprintf( ...
+        'Frame %d — %d Detected Sources', ...
+        frameNumber, ...
+        numSources));
+
+    xlabel('Displayed X Pixel');
+    ylabel('Displayed Y Pixel');
+
+    hold off;
+
+end
+
+
+%% ============================================================
+% ============================================================
+% SOURCE TRACKING
+% ============================================================
+%
+% Each source is tracked between consecutive frames using
+% nearest-neighbour matching.
+%
+% Stationary stars therefore remain approximately horizontal/
+% vertical at the same position.
+%
+% Moving stars produce trajectories.
+%
+% ============================================================
+
+fprintf('\n');
+fprintf('============================================\n');
+fprintf(' SOURCE TRACKING\n');
+fprintf('============================================\n');
+
+
+%% ============================================================
+% TRACK STORAGE
+% ============================================================
+
+tracks = struct( ...
+    'x',{}, ...
+    'y',{}, ...
+    'frames',{}, ...
+    'lastFrame',{}, ...
+    'lastX',{}, ...
+    'lastY',{});
+
+
+%% ============================================================
+% CREATE TRACKS FROM FIRST FRAME
+% ============================================================
+
+firstX = ...
+    centroidsX{1};
+
+firstY = ...
+    centroidsY{1};
+
+for k = 1:length(firstX)
+
+    tracks(k).x = firstX(k);
+    tracks(k).y = firstY(k);
+
+    tracks(k).frames = 1;
+
+    tracks(k).lastFrame = 1;
+
+    tracks(k).lastX = firstX(k);
+    tracks(k).lastY = firstY(k);
+
+end
+
+
+%% ============================================================
+% PROCESS REMAINING FRAMES
+% ============================================================
+
+for frameNumber = 2:Nframes
+
+    currentX = ...
+        centroidsX{frameNumber};
+
+    currentY = ...
+        centroidsY{frameNumber};
+
+
+    numCurrent = ...
+        length(currentX);
+
+
+    if numCurrent == 0
+
+        continue
+
+    end
+
+
+    %% ========================================================
+    % KEEP TRACK OF ALREADY USED SOURCES
+    % ========================================================
+
+    usedCurrent = ...
+        false(numCurrent,1);
+
+
+    %% ========================================================
+    % MATCH EACH EXISTING TRACK
+    % ========================================================
+
+    for trackNumber = 1:length(tracks)
+
+        lastX = ...
+            tracks(trackNumber).lastX;
+
+        lastY = ...
+            tracks(trackNumber).lastY;
+
+
+        %% ----------------------------------------------------
+        % DISTANCE TO ALL CURRENT SOURCES
+        % ----------------------------------------------------
+
+        distances = ...
+            sqrt( ...
+            (currentX - lastX).^2 + ...
+            (currentY - lastY).^2);
+
+
+        %% ----------------------------------------------------
+        % PREVENT ALREADY MATCHED SOURCES
+        % ----------------------------------------------------
+
+        distances(usedCurrent) = Inf;
+
+
+        %% ----------------------------------------------------
+        % FIND CLOSEST SOURCE
+        % ----------------------------------------------------
+
+        [minimumDistance,index] = ...
+            min(distances);
+
+
+        %% ----------------------------------------------------
+        % MATCH IF WITHIN TRACKING LIMIT
+        % ----------------------------------------------------
+
+        if minimumDistance <= ...
+                maxTrackingDistance
+
+            usedCurrent(index) = true;
+
+
+            tracks(trackNumber).x(end+1) = ...
+                currentX(index);
+
+            tracks(trackNumber).y(end+1) = ...
+                currentY(index);
+
+            tracks(trackNumber).frames(end+1) = ...
+                frameNumber;
+
+            tracks(trackNumber).lastFrame = ...
+                frameNumber;
+
+            tracks(trackNumber).lastX = ...
+                currentX(index);
+
+            tracks(trackNumber).lastY = ...
+                currentY(index);
+
+        end
+
+    end
+
+
+    %% ========================================================
+    % CREATE NEW TRACKS FOR UNMATCHED SOURCES
+    % ========================================================
+
+    for sourceNumber = 1:numCurrent
+
+        if ~usedCurrent(sourceNumber)
+
+            newTrack = ...
+                length(tracks) + 1;
+
+            tracks(newTrack).x = ...
+                currentX(sourceNumber);
+
+            tracks(newTrack).y = ...
+                currentY(sourceNumber);
+
+            tracks(newTrack).frames = ...
+                frameNumber;
+
+            tracks(newTrack).lastFrame = ...
+                frameNumber;
+
+            tracks(newTrack).lastX = ...
+                currentX(sourceNumber);
+
+            tracks(newTrack).lastY = ...
+                currentY(sourceNumber);
+
+        end
+
+    end
+
+end
+
+
+%% ============================================================
+% ============================================================
+% FINAL TRAJECTORY FIGURE
+% ============================================================
+% ============================================================
+
+figure( ...
+    'Name', ...
+    'Source Trajectories', ...
+    'NumberTitle','off');
+
+hold on;
+
+grid on;
+
+axis equal;
+
+
+%% ============================================================
+% PLOT EVERY TRACK
+% ============================================================
+
+for trackNumber = 1:length(tracks)
+
+    if length(tracks(trackNumber).x) >= 2
+
+        plot( ...
+            tracks(trackNumber).x, ...
+            tracks(trackNumber).y, ...
+            '-o', ...
+            'LineWidth',1.5, ...
+            'MarkerSize',5);
+
+    else
+
+        plot( ...
+            tracks(trackNumber).x, ...
+            tracks(trackNumber).y, ...
+            'o', ...
+            'MarkerSize',6);
+
+    end
+
+
+    %% --------------------------------------------------------
+    % TRACK NUMBER
+    % --------------------------------------------------------
+
+    text( ...
+        tracks(trackNumber).x(1), ...
+        tracks(trackNumber).y(1), ...
+        sprintf('  S%d',trackNumber), ...
+        'FontSize',9);
+
+end
+
+
+xlabel('Displayed X Pixel');
+ylabel('Displayed Y Pixel');
+
+title('Detected Source Trajectories');
+
+xlim([1 Nx]);
+ylim([1 Ny]);
+
+set(gca,'YDir','reverse');
+
+hold off;
+
+
+%% ============================================================
+% ============================================================
+% FINAL FRAME WITH ALL SOURCE CENTROIDS
+% ============================================================
+%
+% This is NOT a combined image.
+%
+% It is simply the LAST measured frame with the source
+% centroids identified.
+%
+% ============================================================
+
+figure( ...
+    'Name', ...
+    'Final Frame — Source Centroids', ...
+    'NumberTitle','off');
+
+
+finalFrame = ...
+    Photon_images{Nframes};
+
+imagesc(finalFrame);
+
+axis image;
+axis ij;
+
+colormap(gray);
+colorbar;
+
+hold on;
+
+
+%% ============================================================
+% PLOT FINAL FRAME CENTROIDS
+% ============================================================
+
+finalX = ...
+    centroidsX{Nframes};
+
+finalY = ...
+    centroidsY{Nframes};
+
+
+for k = 1:length(finalX)
+
+    plot( ...
+        finalX(k), ...
+        finalY(k), ...
+        'r+', ...
+        'MarkerSize',14, ...
+        'LineWidth',2);
+
+
+    text( ...
+        finalX(k) + 0.6, ...
+        finalY(k), ...
+        sprintf('%d',k), ...
+        'Color','r', ...
+        'FontSize',11, ...
+        'FontWeight','bold');
+
+end
+
+
+title(sprintf( ...
+    'Final Frame — All Detected Source Centroids (%d)', ...
+    length(finalX)));
+
+xlabel('Displayed X Pixel');
+ylabel('Displayed Y Pixel');
+
+hold off;
+
+
+%% ============================================================
+% ============================================================
+% TRAJECTORIES OVER FINAL FRAME
+% ============================================================
+%
+% This is particularly useful for distinguishing:
+%
+%   stationary stars
+%   moving objects
+%
+% The final image remains ONLY the final measured frame.
+%
+% Trajectories are overlaid afterwards.
+%
+% ============================================================
+
+figure( ...
+    'Name', ...
+    'Final Frame + Source Trajectories', ...
+    'NumberTitle','off');
+
+imagesc(finalFrame);
+
+axis image;
+axis ij;
+
+colormap(gray);
+colorbar;
+
+hold on;
+
+
+%% ============================================================
+% PLOT ALL SOURCE TRAJECTORIES
+% ============================================================
+
+for trackNumber = 1:length(tracks)
+
+    if length(tracks(trackNumber).x) >= 2
+
+        plot( ...
+            tracks(trackNumber).x, ...
+            tracks(trackNumber).y, ...
+            '-o', ...
+            'LineWidth',1.5, ...
+            'MarkerSize',4);
+
+    else
+
+        plot( ...
+            tracks(trackNumber).x, ...
+            tracks(trackNumber).y, ...
+            'o', ...
+            'MarkerSize',6);
+
+    end
+
+
+    %% --------------------------------------------------------
+    % LABEL TRACK
+    % --------------------------------------------------------
+
+    text( ...
+        tracks(trackNumber).x(end) + 0.5, ...
+        tracks(trackNumber).y(end), ...
+        sprintf('S%d',trackNumber), ...
+        'FontSize',9, ...
+        'FontWeight','bold');
+
+end
+
+
+title( ...
+    'Final Frame + Detected Source Trajectories');
+
+xlabel('Displayed X Pixel');
+ylabel('Displayed Y Pixel');
+
+hold off;
+
+
+%% ============================================================
+% ============================================================
+% IDENTIFY STATIONARY / MOVING SOURCES
+% ============================================================
+%
+% A source is considered stationary if its total displacement
+% is below the specified tolerance.
+%
+% ============================================================
+
+stationaryTolerance = 1.0;
+
+
+fprintf('\n');
+fprintf('============================================\n');
+fprintf(' SOURCE TRACK SUMMARY\n');
+fprintf('============================================\n');
+
+
+for trackNumber = 1:length(tracks)
+
+    xTrack = ...
+        tracks(trackNumber).x;
+
+    yTrack = ...
+        tracks(trackNumber).y;
+
+
+    if length(xTrack) >= 2
+
+        totalDisplacement = ...
+            sqrt( ...
+            (xTrack(end)-xTrack(1)).^2 + ...
+            (yTrack(end)-yTrack(1)).^2);
+
+    else
+
+        totalDisplacement = 0;
+
+    end
+
+
+    if totalDisplacement <= ...
+            stationaryTolerance
+
+        status = 'STATIONARY';
+
+    else
+
+        status = 'MOVING';
+
+    end
+
+
+    fprintf( ...
+        'Source %2d : %10s | Frames = %2d | Displacement = %.3f pixels\n', ...
+        trackNumber, ...
+        status, ...
+        length(xTrack), ...
+        totalDisplacement);
+
+end
+
+
+%% ============================================================
+% ============================================================
+% FRAME SUMMARY
+% ============================================================
+% ============================================================
+
+fprintf('\n');
+fprintf('============================================\n');
+fprintf(' FRAME SUMMARY\n');
+fprintf('============================================\n');
+
+fprintf('\n');
+
+fprintf('Frame        Sources        Threshold\n');
+
+fprintf('--------------------------------------------\n');
+
+for frameNumber = 1:Nframes
+
+    fprintf( ...
+        '%3d          %3d          %.3f\n', ...
+        frameNumber, ...
+        numSourcesPerFrame(frameNumber), ...
+        thresholds(frameNumber));
+
+end
+
+
+%% ============================================================
+% ============================================================
+% FINAL INFORMATION
+% ============================================================
+% ============================================================
+
+elapsedTime = toc;
+
+fprintf('\n');
+fprintf('============================================\n');
+fprintf(' PROCESSING COMPLETE\n');
+fprintf('============================================\n');
+
+fprintf('Frames processed : %d\n',Nframes);
+
+fprintf('Grid size        : %d x %d\n',Nx,Ny);
+
+fprintf('Interpolation    : %d\n',useInterpolation);
+
+fprintf('Sigma threshold  : %.2f\n',sigmaLevel);
+
+fprintf('Minimum pixels   : %d\n',minimumSourcePixels);
+
+fprintf('Maximum tracking distance : %.2f pixels\n', ...
+    maxTrackingDistance);
+
+fprintf('\n');
+
+fprintf('Processing time  : %.3f seconds\n', ...
+    elapsedTime);
+
+fprintf('============================================\n');
